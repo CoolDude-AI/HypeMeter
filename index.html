@@ -104,22 +104,20 @@ async function loadData(){
   const mentions = await mentionsRes.json();
   const quotes = await quotesRes.json();
 
-  // simple size-aware hype: normalize mentions vs 30-day baseline stored locally (first run uses current as baseline)
   const baseline = JSON.parse(localStorage.getItem('baseline')||'{}');
   const now = Date.now();
   const out = SYMBOLS.map(([t,n,sec])=>{
     const m = mentions[t] || 0;
     const q = quotes[t] || {};
     const base = baseline[t]?.m || m || 1;
-    const excess = (m - base) / Math.max(1, base); // relative lift vs baseline
-    const volAdj = Math.min(1.5, Math.max(0.6, (q.volRel || 1))); // crude adj on rel volume if available
-    const hype100 = Math.max(0, Math.min(100, 50 + 50 * excess * volAdj)); // center 50, stretch by excess
+    const excess = (m - base) / Math.max(1, base);
+    const volAdj = Math.min(1.5, Math.max(0.6, (q.volRel || 1)));
+    const hype100 = Math.max(0, Math.min(100, 50 + 50 * excess * volAdj));
     return { t, n, sec, mentions: m, hype: hype100, chgPct: q.chgPct };
   });
 
-  // Update rolling baseline (EWMA-like)
   const newBaseline = {...baseline};
-  for(const r of out){
+  for (const r of out){
     const prev = newBaseline[r.t]?.m ?? r.mentions;
     const smooth = 0.95*prev + 0.05*r.mentions;
     newBaseline[r.t] = { m: Math.max(1, smooth), ts: now };
