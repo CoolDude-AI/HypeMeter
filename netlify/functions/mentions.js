@@ -1,93 +1,65 @@
-// netlify/functions/mentions.js
-const DEFAULT_WINDOW_MIN = 60; // 1h
+const DEFAULT_WINDOW_MIN = 60;
 const FETCH_TIMEOUT_MS = 10_000;
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
 
-// Ticker -> Company name (expand as you add tickers)
 const NAME_BY_TICKER = {
-  NVDA: "NVIDIA", AAPL: "Apple", MSFT: "Microsoft", AMZN: "Amazon",
-  GOOGL: "Alphabet", META: "Meta", TSLA: "Tesla", AMD: "AMD",
-  PLTR: "Palantir", NFLX: "Netflix", COIN: "Coinbase", GME: "GameStop",
-  AMC: "AMC", RIVN: "Rivian", SNAP: "Snap", UBER: "Uber",
-  SPOT: "Spotify", SHOP: "Shopify", DIS: "Disney", NIO: "NIO"
+  NVDA:"NVIDIA",AAPL:"Apple",MSFT:"Microsoft",AMZN:"Amazon",GOOGL:"Alphabet",META:"Meta",TSLA:"Tesla",AMD:"AMD",PLTR:"Palantir",
+  NFLX:"Netflix",COIN:"Coinbase",GME:"GameStop",AMC:"AMC",RIVN:"Rivian",SNAP:"Snap",UBER:"Uber",SPOT:"Spotify",SHOP:"Shopify",DIS:"Disney",NIO:"NIO"
+};
+const cache = new Map();
+const sleep = (ms) => new Promise(r=>setTimeout(r,ms));
+
+function timespanParam(m){ return m%60===0?`${m/60}h`:`${m}m`; }
+function httpRes(code,body){ return { statusCode:code, headers:{'Content-Type':'application/json',...CORS}, body:JSON.stringify(body)}; }
+
+const withTimeout=(url,opts={},ms=FETCH_TIMEOUT_MS)=>{
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),ms);
+  return fetch(url,{...opts,signal:ctrl.signal}).finally(()=>clearTimeout(t));
 };
 
-// per-instance cache to soften API spikes
-const cache = new Map(); // key: `${tickers}|${windowMin}` -> { ts, data }
-
-function httpRes(statusCode, bodyObj) {
-  return {
-    statusCode,
-    headers: { 'Content-Type': 'application/json', ...CORS },
-    body: JSON.stringify(bodyObj),
-  };
-}
-
-const withTimeout = (url, opts = {}, ms = FETCH_TIMEOUT_MS) => {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
-};
-
-function sumTimeline(json) {
-  try {
-    const arr = json?.timeline?.[0]?.data;
-    if (!Array.isArray(arr)) return 0;
-    return arr.reduce((acc, d) => acc + (Number(d?.value) || 0), 0);
-  } catch {
-    return 0;
+async function fetchGdelt(url,attempt=1){
+  try{
+    const res=await withTimeout(url);
+    if(!res.ok) throw new Error(res.status);
+    return await res.json().catch(()=>({}));
+  }catch(e){
+    if(attempt<3){await sleep(300*attempt);return fetchGdelt(url,attempt+1);}
+    return {};
   }
 }
+function sumTimeline(j){return (j?.timeline?.[0]?.data||[]).reduce((a,d)=>a+(+d?.value||0),0);}
 
-exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') return httpRes(200, { ok: true });
+exports.handler=async e=>{
+  if(e.httpMethod==='OPTIONS') return httpRes(200,{ok:true});
+  try{
+    const u=new URL(e.rawUrl);
+    const tickers=(u.searchParams.get('tickers')||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
+    const windowMin=Math.max(1,Math.min(1440,+u.searchParams.get('window')||DEFAULT_WINDOW_MIN));
+    if(!tickers.length) return httpRes(400,{error:'tickers required'});
 
-  try {
-    const url = new URL(event.rawUrl);
-    const tickersParam = url.searchParams.get('tickers') || '';
-    const windowMin = Math.max(1, Math.min(1440, Number(url.searchParams.get('window')) || DEFAULT_WINDOW_MIN));
+    const key=`${tickers.join(',')}|${windowMin}`, now=Date.now(), c=cache.get(key);
+    if(c && now-c.ts<60_000) return httpRes(200,c.data);
 
-    const tickers = tickersParam.split(',')
-      .map(s => s.trim().toUpperCase())
-      .filter(Boolean);
-
-    if (tickers.length === 0) {
-      return httpRes(400, { error: 'tickers required, e.g. ?tickers=NVDA,AAPL' });
-    }
-
-    // 60s cache
-    const key = `${tickers.join(',')}|${windowMin}`;
-    const cached = cache.get(key);
-    const now = Date.now();
-    if (cached && now - cached.ts < 60_000) {
-      return httpRes(200, cached.data);
-    }
-
-    const results = {};
-    await Promise.all(tickers.map(async (t) => {
-      try {
-        const name = NAME_BY_TICKER[t] || t;
-        // ticker OR "Company Name" OR $TICKER; English only to reduce noise
-        const q = encodeURIComponent(`(${t} OR "${name}" OR "$${t}") AND sourcelang:english`);
-        const gdeltUrl = `https://api.gdeltproject.org/api/v2/doc/doc?format=json&mode=TimelineVol&timespan=${windowMin}m&query=${q}`;
-
-        const res = await withTimeout(gdeltUrl);
-        if (!res.ok) { results[t] = 0; return; }
-        const json = await res.json().catch(() => ({}));
-        const count = sumTimeline(json);
-        results[t] = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
-      } catch {
-        results[t] = 0;
+    const results={}, MAX=4; let i=0;
+    async function worker(){
+      while(i<tickers.length){
+        const t=tickers[i++], name=NAME_BY_TICKER[t]||t, span=timespanParam(windowMin);
+        try{
+          const q1=encodeURIComponent(`(${t} OR "${name}" OR "$${t}") AND sourcelang:english`);
+          let j=await fetchGdelt(`https://api.gdeltproject.org/api/v2/doc/doc?format=json&mode=TimelineVol&timespan=${span}&query=${q1}`);
+          let v=sumTimeline(j);
+          if(!v){
+            const q2=encodeURIComponent(`(${t} OR "${name}" OR "$${t}")`);
+            j=await fetchGdelt(`https://api.gdeltproject.org/api/v2/doc/doc?format=json&mode=TimelineVol&timespan=${span}&query=${q2}`);
+            v=sumTimeline(j);
+          }
+          results[t]=Number.isFinite(v)?Math.max(0,Math.floor(v)):0;
+          await sleep(80);
+        }catch{ results[t]=0; await sleep(120); }
       }
-    }));
-
-    cache.set(key, { ts: now, data: results });
-    return httpRes(200, results);
-  } catch (err) {
-    return httpRes(500, { error: 'mentions failed', detail: String(err?.message || err) });
-  }
+    }
+    await Promise.all(Array.from({length:Math.min(MAX,tickers.length)},worker));
+    cache.set(key,{ts:now,data:results});
+    return httpRes(200,results);
+  }catch(err){return httpRes(500,{error:'mentions failed',detail:String(err?.message||err)})}
 };
