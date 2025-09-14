@@ -65,12 +65,7 @@
   </main>
 
 <script>
-const TF_MIN = { '1h': 60, '24h': 1440 };
-let TF = '1h';                                    // default timeframe
-let LAST_ROWS = [];                                // keep last dataset
-const SPARK_POINTS = 24;                           // (keep if you added sparklines)
-let LAST_ROWS = []; // keep previous dataset
-  // ---- CONFIG ----
+// ===== CONFIG / STATE =====
 const SYMBOLS = [
   ['NVDA','NVIDIA Corp','Equity'],['AAPL','Apple Inc.','Equity'],['MSFT','Microsoft Corp','Equity'],
   ['AMZN','Amazon.com Inc','Equity'],['GOOGL','Alphabet Inc.','Equity'],['META','Meta Platforms','Equity'],
@@ -80,14 +75,17 @@ const SYMBOLS = [
   ['UBER','Uber Technologies','Equity'],['SPOT','Spotify','Equity'],['SHOP','Shopify','Equity'],
   ['DIS','Walt Disney','Equity'],['NIO','NIO Inc','Equity']
 ];
-const WINDOW_MINUTES = 60;
-const REFRESH_MS = 5 * 60 * 1000; // 5 minutes
 
-// ---- Helpers ----
+const TF_MIN = { '1h': 60, '24h': 1440 };
+let TF = '1h';
+let LAST_ROWS = [];                 // <-- only declared once
+const REFRESH_MS = 5 * 60 * 1000;   // 5 minutes
+
+// ===== RENDERING =====
 function rowTemplate(a, i){
   const pct = Math.max(0, Math.min(100, a.hype));
   const priceCls = a.chgPct > 0.2 ? 'up' : (a.chgPct < -0.2 ? 'down' : 'flat');
-  const chgStr = isFinite(a.chgPct) ? (a.chgPct>0?'+':'') + a.chgPct.toFixed(2) + '%' : '';
+  const chgStr = Number.isFinite(a.chgPct) ? (a.chgPct>0?'+':'') + a.chgPct.toFixed(2) + '%' : '';
   return `
     <div class="item">
       <div class="rank">${i+1}</div>
@@ -95,24 +93,26 @@ function rowTemplate(a, i){
       <div>${a.n}<div class="sub">${a.sec}</div></div>
       <div>
         <div class="meter"><div class="fill" style="width:${pct}%"></div></div>
-        <div class="sub">Score: ${pct.toFixed(0)} / 100 &nbsp; • mentions: ${a.mentions}</div>
+        <div class="sub">Score: ${pct.toFixed(0)} / 100 • mentions: ${a.mentions}</div>
       </div>
     </div>`;
 }
 
 function render(rows){
-  if (rows) LAST_ROWS = rows;           // store latest full dataset
+  if (rows) LAST_ROWS = rows;
   const q = document.getElementById('q').value.toLowerCase();
-  const src = rows || LAST_ROWS;        // when called without rows, reuse last
+  const src = rows || LAST_ROWS;
   const filtered = src.filter(a => (a.t + ' ' + a.n).toLowerCase().includes(q));
   const sorted = filtered.sort((a,b)=> b.hype - a.hype);
   document.getElementById('list').innerHTML = sorted.map(rowTemplate).join('');
 }
 
+// ===== DATA LOAD =====
 async function loadData(){
   try {
     const tickers = SYMBOLS.map(s=>s[0]).join(',');
     const minutes = TF_MIN[TF];
+
     const [mentionsRes, quotesRes] = await Promise.all([
       fetch(`/.netlify/functions/mentions?tickers=${encodeURIComponent(tickers)}&window=${minutes}`),
       fetch(`/.netlify/functions/quotes?tickers=${encodeURIComponent(tickers)}`)
@@ -121,7 +121,7 @@ async function loadData(){
     const mentions = await mentionsRes.json().catch(()=> ({}));
     const quotes   = await quotesRes.json().catch(()=> ({}));
 
-    const BASEKEY = `baseline_${TF}`;                              // <<< baseline per timeframe
+    const BASEKEY = `baseline_${TF}`;
     const baseline = JSON.parse(localStorage.getItem(BASEKEY)||'{}');
     const now = Date.now();
 
@@ -137,7 +137,7 @@ async function loadData(){
       return { t, n, sec, mentions: m, hype: hype100, chgPct };
     });
 
-    // smooth & save baseline for this TF
+    // update baseline
     const newBaseline = {...baseline};
     for (const r of out){
       const prev = newBaseline[r.t]?.m ?? r.mentions;
@@ -148,20 +148,23 @@ async function loadData(){
 
     render(out);
   } catch {
-    render(); // keep last good data
+    render(); // keep last good data on errors
   }
 }
+
+// ===== WIRING =====
 document.addEventListener('DOMContentLoaded', ()=>{
-  // --- make search just re-render ---
+  // search: just re-render (no network)
   document.getElementById('q').addEventListener('input', ()=> render());
 
-  // --- hook up the 1H / 24H buttons ---
-  document.querySelectorAll('.tf').forEach(btn=>{
+  // timeframe buttons
+  const tfButtons = document.querySelectorAll('.tf');
+  tfButtons.forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      document.querySelectorAll('.tf').forEach(b=>b.classList.remove('active'));
+      tfButtons.forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      TF = btn.dataset.tf;          // '1h' or '24h'
-      loadData();                   // refetch with the new timeframe
+      TF = btn.dataset.tf;   // '1h' or '24h'
+      loadData();
     });
   });
 
