@@ -1,36 +1,58 @@
 // netlify/functions/mentions.js
-// Counts recent news mentions per ticker using GDELT (no key).
-// Example: /.netlify/functions/mentions?tickers=NVDA,AAPL&window=60
 export const handler = async (event) => {
   try {
     const url = new URL(event.rawUrl);
-    const tickers = (url.searchParams.get('tickers') || '').split(',').map(s=>s.trim()).filter(Boolean);
-    const windowMin = parseInt(url.searchParams.get('window') || '60', 10);
-    if(!tickers.length) return resp(400, { error: 'tickers required' });
+    const tickers = (url.searchParams.get('tickers') || '')
+      .split(',').map(s=>s.trim()).filter(Boolean);
+    const windowMin = Math.max(15, parseInt(url.searchParams.get('window') || '60', 10));
+    if (!tickers.length) return resp(400, { error: 'tickers required' });
 
-    // Query GDELT per ticker, limited to 60 minutes. We use mode=ArtList and maxrecords to cap.
-    // Note: GDELT may rate limit; in production add caching.
-    const counts = {};
-    for(const t of tickers){
-      const q = encodeURIComponent(`${t} stock OR ${t} shares OR ${t} company`);
-      const gdelt = `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=ArtList&maxrecords=75&format=json&timespan=${windowMin}m`;
+    const out = {};
+    for (const t of tickers) {
+      // 1) GDELT
+      const q = encodeURIComponent(`(${t}) AND (stock OR shares OR ticker OR company OR earnings OR price) sourcelang:english`);
+      const gdelt = `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=ArtList&format=json&maxrecords=100&timespan=${windowMin}m`;
+      let count = 0;
       try {
-        const res = await fetch(gdelt, { headers: { 'User-Agent': 'HypeMeter/1.0' }});
-        if(!res.ok) { counts[t] = 0; continue; }
-        const data = await res.json();
-        counts[t] = Array.isArray(data.articles) ? data.articles.length : 0;
-      } catch(e){
-        counts[t] = 0;
+        const r = await fetch(gdelt, { headers: { 'User-Agent': 'HypeMeter/1.0' } });
+        if (r.ok) {
+          const j = await r.json();
+          count = Array.isArray(j.articles) ? j.articles.length : 0;
+        }
+      } catch {}
+
+      // 2) Google News RSS fallback
+      if (count === 0) {
+        const since = Date.now() - windowMin * 60 * 1000;
+        const gnews = `https://news.google.com/rss/search?q=${encodeURIComponent(t + ' stock')}&hl=en-US&gl=US&ceid=US:en`;
+        try {
+          const r = await fetch(gnews, { headers: { 'User-Agent': 'HypeMeter/1.0' } });
+          if (r.ok) {
+            const xml = await r.text();
+            const items = xml.split('<item>').slice(1);
+            let c = 0;
+            for (const it of items) {
+              const m = it.match(/<pubDate>([^<]+)<\/pubDate>/i);
+              if (!m) continue;
+              const ts = Date.parse(m[1]);
+              if (isFinite(ts) && ts >= since) c++;
+            }
+            count = c;
+          }
+        } catch {}
       }
-      // Small delay could be added here to be nicer to GDELT
+
+      out[t] = count;
+      // await new Promise(r => setTimeout(r, 40)); // optional pacing
     }
-    return resp(200, counts);
+
+    return resp(200, out);
   } catch (e) {
     return resp(500, { error: String(e) });
   }
 };
 
-function resp(statusCode, body){
+function resp(statusCode, body) {
   return {
     statusCode,
     headers: {
