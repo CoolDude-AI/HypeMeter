@@ -28,7 +28,7 @@
     footer{color:var(--muted);text-align:center;font-size:12px;margin:16px 0}
     @media(min-width:640px){ .head,.item{grid-template-columns:60px 110px 1.2fr 2fr} }
     .tfs{display:inline-flex;gap:6px;background:#151827;border:1px solid #21263b;border-radius:10px;padding:6px}
-    .tf{border:0;background:transparent;color:#aab1c4;padding:8px 10px;border-radius:8px;font-weight:700}
+    .tf{border:0;background:transparent;color:#aab1c4;padding:8px 10px;border-radius:8px;font-weight:700;cursor:pointer}
     .tf.active{background:#1b1f30;color:#fff;box-shadow:inset 0 0 0 1px #2b3150}
   </style>
 </head>
@@ -45,9 +45,9 @@
       <input class="search" id="q" type="search" placeholder="Search tickers… (NVDA, TSLA, BTC)" />
     </div>
     <div class="tfs" role="tablist" style="margin-left:8px">
-  <button class="tf active" data-tf="1h" aria-selected="true">1H</button>
-  <button class="tf" data-tf="24h">24H</button>
-</div>
+      <button class="tf active" data-tf="1h" aria-selected="true">1H</button>
+      <button class="tf" data-tf="24h">24H</button>
+    </div>
   </header>
 
   <main>
@@ -61,40 +61,50 @@
       <div id="list"></div>
     </section>
 
-    <footer>Demo uses GDELT counts (last 60m) + quotes from Finnhub via Netlify Functions.</footer>
+    <footer>Demo uses GDELT counts (last 60m/24h) + quotes from Finnhub via Netlify Functions.</footer>
   </main>
 
 <script>
 // ===== CONFIG / STATE =====
 const SYMBOLS = [
   ['NVDA','NVIDIA Corp','Equity'],['AAPL','Apple Inc.','Equity'],['MSFT','Microsoft Corp','Equity'],
-  ['AMZN','Amazon.com Inc','Equity'],['GOOGL','Alphabet Inc.','Equity'],['META','Meta Platforms','Equity'],
+  ['AMZN','Amazon.com Inc','Equity'],['GOOGL','Alphabet Inc','Equity'],['META','Meta Platforms','Equity'],
   ['TSLA','Tesla Inc','Equity'],['AMD','Advanced Micro Devices','Equity'],['PLTR','Palantir Technologies','Equity'],
   ['NFLX','Netflix Inc','Equity'],['COIN','Coinbase Global','Equity'],['GME','GameStop','Equity'],
   ['AMC','AMC Entertainment','Equity'],['RIVN','Rivian Automotive','Equity'],['SNAP','Snap Inc','Equity'],
   ['UBER','Uber Technologies','Equity'],['SPOT','Spotify','Equity'],['SHOP','Shopify','Equity'],
   ['DIS','Walt Disney','Equity'],['NIO','NIO Inc','Equity']
 ];
-const EPS = 1e-6;
-const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
-const tanh = Math.tanh || (z => {
-  const e1 = Math.exp(z), e2 = Math.exp(-z);
-  return (e1 - e2) / (e1 + e2);
-});
-const sigmoid = (z) => 1 / (1 + Math.exp(-z));
 const TF_MIN = { '1h': 60, '24h': 1440 };
 let TF = '1h';
-let LAST_ROWS = [];                 // <-- only declared once
-const REFRESH_MS = 5 * 60 * 1000;   // 5 minutes
+let LAST_ROWS = [];
+const REFRESH_MS = 5 * 60 * 1000;
+
+// ===== HELPERS =====
+const EPS = 1e-6;
+const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
+const tanh = Math.tanh || (z => { const e1 = Math.exp(z), e2 = Math.exp(-z); return (e1 - e2) / (e1 + e2); });
+const sigmoid = (z) => 1 / (1 + Math.exp(-z));
+
+function showBanner(msg){
+  let el = document.getElementById('err');
+  if (!el){
+    el = document.createElement('div');
+    el.id = 'err';
+    el.style.cssText = 'position:sticky;top:52px;z-index:11;background:#2a2030;color:#ffb8c6;border:1px solid #50324b;margin:8px;padding:8px 10px;border-radius:8px;font-size:12px';
+    document.querySelector('header').after(el);
+  }
+  el.textContent = msg;
+}
 
 // ===== RENDERING =====
 function rowTemplate(a, i){
   const hype = Number.isFinite(a.hype) ? a.hype : 0;
   const pct = Math.max(0, Math.min(100, hype));
   const chg = Number.isFinite(a.chgPct) ? a.chgPct : 0;
-
   const priceCls = chg > 0.2 ? 'up' : (chg < -0.2 ? 'down' : 'flat');
   const chgStr = chg ? (chg>0?'+':'') + chg.toFixed(2) + '%' : '';
+  const mDisp = Number.isFinite(a.mentions) && a.mentions>0 ? a.mentions : '—';
 
   return `
     <div class="item">
@@ -103,7 +113,7 @@ function rowTemplate(a, i){
       <div>${a.n}<div class="sub">${a.sec}</div></div>
       <div>
         <div class="meter"><div class="fill" style="width:${pct}%"></div></div>
-        <div class="sub">Score: ${pct.toFixed(0)} / 100 • mentions: ${a.mentions ?? 0}</div>
+        <div class="sub">Score: ${pct.toFixed(0)} / 100 • mentions: ${mDisp}</div>
       </div>
     </div>`;
 }
@@ -128,12 +138,13 @@ async function loadData(){
       fetch(`/.netlify/functions/quotes?tickers=${encodeURIComponent(tickers)}`)
     ]);
 
-    // If an endpoint fails, keep last good data visible
     const safeJson = async (res) => (res && res.ok) ? (await res.json().catch(()=>null)) : null;
     const mentions = await safeJson(mentionsRes);
     const quotes   = await safeJson(quotesRes);
 
-    // If both failed, keep showing what we had
+    if (!mentionsRes.ok) showBanner('Mentions API unavailable — showing last good data when possible.');
+    if (!quotesRes.ok)   showBanner('Quotes API unavailable — price/volume may be stale.');
+
     if (!mentions && !quotes) { render(); return; }
 
     const BASEKEY = `baseline_${TF}`;
@@ -142,7 +153,6 @@ async function loadData(){
 
     const prevByT = Object.fromEntries((LAST_ROWS || []).map(r => [r.t, r]));
 
-    // ---------- 1) Build a raw snapshot first ----------
     const snapshot = SYMBOLS.map(([t,n,sec])=>{
       const m = Number(mentions?.[t]) || 0;
       const q = quotes?.[t] || {};
@@ -151,51 +161,39 @@ async function loadData(){
       return { t, n, sec, m, chgPct, volRel };
     });
 
-    // Cohort median of non-zero mentions for better seeding
     const nonZero = snapshot.map(s=>s.m).filter(v=>v>0).sort((a,b)=>a-b);
-    const med = nonZero.length ? (nonZero[Math.floor(nonZero.length/2)]) : 2; // neutral-ish seed
+    const med = nonZero.length ? (nonZero[Math.floor(nonZero.length/2)]) : 2;
     const seedBase = Math.max(1, med);
-
-    // Per-timeframe smoothing (slower for 24h)
     const ALPHA = TF === '1h' ? 0.10 : 0.03;
 
-    // ---------- 2) Score computation with stable mapping ----------
-    const GAIN = 0.8;               // how aggressively log-ratio moves score
-    const VOL_MIN = 0.8, VOL_MAX = 1.2; // soften volume effect
+    const GAIN = 0.8;
+    const VOL_MIN = 0.8, VOL_MAX = 1.2;
 
     const out = snapshot.map(s => {
       const baseStored = Number(baseline[s.t]?.m);
-      // If no baseline yet, seed to cohort median (not 1, not current m)
       const base = Number.isFinite(baseStored) && baseStored > 0 ? baseStored : seedBase;
 
-      // Core signal: log-ratio vs baseline, passed through tanh so it doesn't explode
       const ratio = (s.m + EPS) / (base + EPS);
-      const core  = tanh(GAIN * Math.log(ratio)); // ~ -1..+1
-      let hype    = 50 + 40 * core;               // 10..90 for typical moves
+      const core  = tanh(GAIN * Math.log(ratio));
+      let hype    = 50 + 40 * core;
 
-      // Gentle volume adjustment (narrow clamp prevents pinning)
       const volAdj = clamp(s.volRel, VOL_MIN, VOL_MAX);
-      hype *= volAdj;                              // small nudge, e.g., ±20%
+      hype *= volAdj;
 
-      // Small price momentum bump (kept subtle)
-      const priceKick = 8 * (sigmoid(s.chgPct / 3) - 0.5); // ≈ -4..+4 for common % moves
+      const priceKick = 8 * (sigmoid(s.chgPct / 3) - 0.5);
       hype = clamp(hype + priceKick, 0, 100);
 
       return { t: s.t, n: s.n, sec: s.sec, mentions: s.m, hype, chgPct: s.chgPct };
     });
 
-    // ---------- 3) Update baseline only if mentions succeeded ----------
     if (mentions) {
       const newBaseline = { ...baseline };
       for (const r of out) {
         const prev = Number(newBaseline[r.t]?.m);
         if (Number.isFinite(prev) && prev > 0) {
-          // EWMA update; if m=0, gently decay instead of snapping to 0
-          const next = r.mentions > 0 ? (1-ALPHA)*prev + ALPHA*r.mentions
-                                      : (0.995 * prev); // slow decay when no hits
+          const next = r.mentions > 0 ? (1-ALPHA)*prev + ALPHA*r.mentions : (0.995 * prev);
           newBaseline[r.t] = { m: Math.max(1, next), ts: now };
         } else {
-          // First write uses cohort median, not current m
           newBaseline[r.t] = { m: seedBase, ts: now };
         }
       }
@@ -205,29 +203,25 @@ async function loadData(){
     render(out);
   } catch (err) {
     console.error('loadData error', err);
-    render(); // keep last good data
+    render();
   }
 }
 
 // ===== WIRING =====
 document.addEventListener('DOMContentLoaded', ()=>{
-  // search: just re-render (no network)
   document.getElementById('q').addEventListener('input', ()=> render());
-
-  // timeframe buttons
-  const tfButtons = document.querySelectorAll('.tf');
-  tfButtons.forEach(btn=>{
+  document.querySelectorAll('.tf').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      tfButtons.forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('.tf').forEach(b=>b.classList.remove('active'));
       btn.classList.add('active');
-      TF = btn.dataset.tf;   // '1h' or '24h'
+      TF = btn.dataset.tf;
       loadData();
     });
   });
-
   loadData();
   setInterval(loadData, REFRESH_MS);
 });
 </script>
 </body>
 </html>
+
