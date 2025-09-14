@@ -75,7 +75,13 @@ const SYMBOLS = [
   ['UBER','Uber Technologies','Equity'],['SPOT','Spotify','Equity'],['SHOP','Shopify','Equity'],
   ['DIS','Walt Disney','Equity'],['NIO','NIO Inc','Equity']
 ];
-
+const EPS = 1e-6;
+const clamp = (x, a=0, b=100) => Math.max(a, Math.min(b, x));
+const tanh = Math.tanh || (z => {
+  const e1 = Math.exp(z), e2 = Math.exp(-z);
+  return (e1 - e2) / (e1 + e2);
+});
+const sigmoid = (z) => 1 / (1 + Math.exp(-z));
 const TF_MIN = { '1h': 60, '24h': 1440 };
 let TF = '1h';
 let LAST_ROWS = [];                 // <-- only declared once
@@ -122,44 +128,84 @@ async function loadData(){
       fetch(`/.netlify/functions/quotes?tickers=${encodeURIComponent(tickers)}`)
     ]);
 
-    const mentions = await mentionsRes.json().catch(()=> ({}));
-    const quotes   = await quotesRes.json().catch(()=> ({}));
+    // If an endpoint fails, keep last good data visible
+    const safeJson = async (res) => (res && res.ok) ? (await res.json().catch(()=>null)) : null;
+    const mentions = await safeJson(mentionsRes);
+    const quotes   = await safeJson(quotesRes);
+
+    // If both failed, keep showing what we had
+    if (!mentions && !quotes) { render(); return; }
 
     const BASEKEY = `baseline_${TF}`;
     const baseline = JSON.parse(localStorage.getItem(BASEKEY)||'{}');
     const now = Date.now();
 
     const prevByT = Object.fromEntries((LAST_ROWS || []).map(r => [r.t, r]));
-    const out = SYMBOLS.map(([t,n,sec])=>{
-      const m = Number(mentions[t]) || prevByT[t]?.mentions || 0;
-      const q = quotes[t] || {};
 
-      const volRel = Number(q.volRel) || 1;
-      const chgPct = Number.isFinite(Number(q.chgPct)) 
-        ? Number(q.chgPct) 
-        : (Number(prevByT[t]?.chgPct) || 0);
-
-      const base = Number(baseline[t]?.m) || m || 1;
-      const excess = (m - base) / Math.max(1, base);
-      const volAdj = Math.min(1.5, Math.max(0.6, volRel));
-      const hype100 = Math.max(0, Math.min(100, 50 + 50 * excess * volAdj));
-
-      return { t, n, sec, mentions: m, hype: hype100, chgPct };
+    // ---------- 1) Build a raw snapshot first ----------
+    const snapshot = SYMBOLS.map(([t,n,sec])=>{
+      const m = Number(mentions?.[t]) || 0;
+      const q = quotes?.[t] || {};
+      const chgPct = Number.isFinite(Number(q.chgPct)) ? Number(q.chgPct) : (Number(prevByT[t]?.chgPct) || 0);
+      const volRel = Number.isFinite(Number(q.volRel)) ? Number(q.volRel) : 1;
+      return { t, n, sec, m, chgPct, volRel };
     });
 
-    // update baseline
-    const newBaseline = {...baseline};
-    for (const r of out){
-      const prev = Number(newBaseline[r.t]?.m) || r.mentions || 1;
-      const smooth = 0.95*prev + 0.05*r.mentions;
-      newBaseline[r.t] = { m: Math.max(1, smooth), ts: now };
+    // Cohort median of non-zero mentions for better seeding
+    const nonZero = snapshot.map(s=>s.m).filter(v=>v>0).sort((a,b)=>a-b);
+    const med = nonZero.length ? (nonZero[Math.floor(nonZero.length/2)]) : 2; // neutral-ish seed
+    const seedBase = Math.max(1, med);
+
+    // Per-timeframe smoothing (slower for 24h)
+    const ALPHA = TF === '1h' ? 0.10 : 0.03;
+
+    // ---------- 2) Score computation with stable mapping ----------
+    const GAIN = 0.8;               // how aggressively log-ratio moves score
+    const VOL_MIN = 0.8, VOL_MAX = 1.2; // soften volume effect
+
+    const out = snapshot.map(s => {
+      const baseStored = Number(baseline[s.t]?.m);
+      // If no baseline yet, seed to cohort median (not 1, not current m)
+      const base = Number.isFinite(baseStored) && baseStored > 0 ? baseStored : seedBase;
+
+      // Core signal: log-ratio vs baseline, passed through tanh so it doesn't explode
+      const ratio = (s.m + EPS) / (base + EPS);
+      const core  = tanh(GAIN * Math.log(ratio)); // ~ -1..+1
+      let hype    = 50 + 40 * core;               // 10..90 for typical moves
+
+      // Gentle volume adjustment (narrow clamp prevents pinning)
+      const volAdj = clamp(s.volRel, VOL_MIN, VOL_MAX);
+      hype *= volAdj;                              // small nudge, e.g., ±20%
+
+      // Small price momentum bump (kept subtle)
+      const priceKick = 8 * (sigmoid(s.chgPct / 3) - 0.5); // ≈ -4..+4 for common % moves
+      hype = clamp(hype + priceKick, 0, 100);
+
+      return { t: s.t, n: s.n, sec: s.sec, mentions: s.m, hype, chgPct: s.chgPct };
+    });
+
+    // ---------- 3) Update baseline only if mentions succeeded ----------
+    if (mentions) {
+      const newBaseline = { ...baseline };
+      for (const r of out) {
+        const prev = Number(newBaseline[r.t]?.m);
+        if (Number.isFinite(prev) && prev > 0) {
+          // EWMA update; if m=0, gently decay instead of snapping to 0
+          const next = r.mentions > 0 ? (1-ALPHA)*prev + ALPHA*r.mentions
+                                      : (0.995 * prev); // slow decay when no hits
+          newBaseline[r.t] = { m: Math.max(1, next), ts: now };
+        } else {
+          // First write uses cohort median, not current m
+          newBaseline[r.t] = { m: seedBase, ts: now };
+        }
+      }
+      localStorage.setItem(BASEKEY, JSON.stringify(newBaseline));
     }
-    localStorage.setItem(BASEKEY, JSON.stringify(newBaseline));
 
     render(out);
   } catch (err) {
     console.error('loadData error', err);
-    render(); // keep last good data on errors
+    render(); // keep last good data
   }
 }
 
