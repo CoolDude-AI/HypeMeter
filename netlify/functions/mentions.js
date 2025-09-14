@@ -1,121 +1,93 @@
 // netlify/functions/mentions.js
-//
-// Strong mentions endpoint:
-// - GDELT (english) first, then Google News RSS fallback (no keys)
-// - Counts total hits + unique source domains (breadth)
-// - Caps per-domain contribution to reduce spam
-// - 2-minute in-memory cache to stabilize results and avoid rate limits
-
-let CACHE = { ts: 0, key: "", data: {} };
-const TTL_MS = 2 * 60 * 1000;          // cache window
-const PER_DOMAIN_CAP = 8;              // max articles counted per domain per window
-const UA = "HypeMeter/1.0 (+https://thehypemeter.netlify.app)";
-
-export const handler = async (event) => {
-  try {
-    const url = new URL(event.rawUrl);
-    const tickers = (url.searchParams.get("tickers") || "")
-      .split(",").map(s => s.trim()).filter(Boolean);
-    const windowMin = Math.max(15, parseInt(url.searchParams.get("window") || "60", 10));
-
-    if (!tickers.length) return resp(400, { error: "tickers required" });
-
-    // serve cache if inputs match and cache is fresh
-    const cacheKey = JSON.stringify({ tickers, windowMin });
-    const now = Date.now();
-    if (CACHE.key === cacheKey && now - CACHE.ts < TTL_MS) {
-      return resp(200, CACHE.data, true);
-    }
-
-    const out = {};
-    for (const t of tickers) {
-      // Per-ticker counters
-      let total = 0;
-      const countsByDomain = new Map();
-
-      // ---- 1) GDELT (english filter, last windowMin minutes) ----
-      try {
-        const q = encodeURIComponent(
-          `(${t}) AND (stock OR shares OR ticker OR company OR earnings OR price) sourcelang:english`
-        );
-        const gdeltURL =
-          `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}` +
-          `&mode=ArtList&format=json&maxrecords=150&timespan=${windowMin}m`;
-        const r = await fetch(gdeltURL, { headers: { "User-Agent": UA } });
-        if (r.ok) {
-          const j = await r.json();
-          if (Array.isArray(j.articles)) {
-            for (const a of j.articles) {
-              const d = normDomain(a.domain || a.sourceDomain || a.url);
-              if (!d) continue;
-              const used = countsByDomain.get(d) || 0;
-              if (used < PER_DOMAIN_CAP) {
-                countsByDomain.set(d, used + 1);
-                total++;
-              }
-            }
-          }
-        }
-      } catch { /* ignore and try fallback */ }
-
-      // ---- 2) Google News RSS fallback (still within windowMin) ----
-      if (total === 0) {
-        try {
-          const since = Date.now() - windowMin * 60 * 1000;
-          const urlNews =
-            `https://news.google.com/rss/search?q=${encodeURIComponent(t + " stock")}` +
-            `&hl=en-US&gl=US&ceid=US:en`;
-          const r = await fetch(urlNews, { headers: { "User-Agent": UA } });
-          if (r.ok) {
-            const xml = await r.text();
-            const items = xml.split("<item>").slice(1);
-            for (const it of items) {
-              const m = it.match(/<pubDate>([^<]+)<\/pubDate>/i);
-              const link = (it.match(/<link>([^<]+)<\/link>/i) || [])[1] || "";
-              const ts = m ? Date.parse(m[1]) : NaN;
-              if (!isFinite(ts) || ts < since) continue;
-              const d = normDomain(link);
-              if (!d) continue;
-              const used = countsByDomain.get(d) || 0;
-              if (used < PER_DOMAIN_CAP) {
-                countsByDomain.set(d, used + 1);
-                total++;
-              }
-            }
-          }
-        } catch { /* ignore */ }
-      }
-
-      out[t] = { count: total, domains: countsByDomain.size };
-      // Optional: brief delay to be polite to upstreams
-      // await new Promise(res => setTimeout(res, 40));
-    }
-
-    // update cache
-    CACHE = { ts: now, key: cacheKey, data: out };
-    return resp(200, out);
-
-  } catch (e) {
-    return resp(500, { error: String(e) });
-  }
+const DEFAULT_WINDOW_MIN = 60; // 1h
+const FETCH_TIMEOUT_MS = 10_000;
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// ---- helpers ----
-function normDomain(u) {
-  try {
-    const host = new URL(u.startsWith("http") ? u : `https://${u}`).hostname;
-    return host.replace(/^www\./, "").toLowerCase();
-  } catch { return null; }
-}
+// Ticker -> Company name (expand as you add tickers)
+const NAME_BY_TICKER = {
+  NVDA: "NVIDIA", AAPL: "Apple", MSFT: "Microsoft", AMZN: "Amazon",
+  GOOGL: "Alphabet", META: "Meta", TSLA: "Tesla", AMD: "AMD",
+  PLTR: "Palantir", NFLX: "Netflix", COIN: "Coinbase", GME: "GameStop",
+  AMC: "AMC", RIVN: "Rivian", SNAP: "Snap", UBER: "Uber",
+  SPOT: "Spotify", SHOP: "Shopify", DIS: "Disney", NIO: "NIO"
+};
 
-function resp(statusCode, body, cached = false) {
+// per-instance cache to soften API spikes
+const cache = new Map(); // key: `${tickers}|${windowMin}` -> { ts, data }
+
+function httpRes(statusCode, bodyObj) {
   return {
     statusCode,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Cache-Control": cached ? "public, max-age=30" : "no-store"
-    },
-    body: JSON.stringify(body)
+    headers: { 'Content-Type': 'application/json', ...CORS },
+    body: JSON.stringify(bodyObj),
   };
 }
+
+const withTimeout = (url, opts = {}, ms = FETCH_TIMEOUT_MS) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
+};
+
+function sumTimeline(json) {
+  try {
+    const arr = json?.timeline?.[0]?.data;
+    if (!Array.isArray(arr)) return 0;
+    return arr.reduce((acc, d) => acc + (Number(d?.value) || 0), 0);
+  } catch {
+    return 0;
+  }
+}
+
+exports.handler = async (event) => {
+  if (event.httpMethod === 'OPTIONS') return httpRes(200, { ok: true });
+
+  try {
+    const url = new URL(event.rawUrl);
+    const tickersParam = url.searchParams.get('tickers') || '';
+    const windowMin = Math.max(1, Math.min(1440, Number(url.searchParams.get('window')) || DEFAULT_WINDOW_MIN));
+
+    const tickers = tickersParam.split(',')
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
+
+    if (tickers.length === 0) {
+      return httpRes(400, { error: 'tickers required, e.g. ?tickers=NVDA,AAPL' });
+    }
+
+    // 60s cache
+    const key = `${tickers.join(',')}|${windowMin}`;
+    const cached = cache.get(key);
+    const now = Date.now();
+    if (cached && now - cached.ts < 60_000) {
+      return httpRes(200, cached.data);
+    }
+
+    const results = {};
+    await Promise.all(tickers.map(async (t) => {
+      try {
+        const name = NAME_BY_TICKER[t] || t;
+        // ticker OR "Company Name" OR $TICKER; English only to reduce noise
+        const q = encodeURIComponent(`(${t} OR "${name}" OR "$${t}") AND sourcelang:english`);
+        const gdeltUrl = `https://api.gdeltproject.org/api/v2/doc/doc?format=json&mode=TimelineVol&timespan=${windowMin}m&query=${q}`;
+
+        const res = await withTimeout(gdeltUrl);
+        if (!res.ok) { results[t] = 0; return; }
+        const json = await res.json().catch(() => ({}));
+        const count = sumTimeline(json);
+        results[t] = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+      } catch {
+        results[t] = 0;
+      }
+    }));
+
+    cache.set(key, { ts: now, data: results });
+    return httpRes(200, results);
+  } catch (err) {
+    return httpRes(500, { error: 'mentions failed', detail: String(err?.message || err) });
+  }
+};
