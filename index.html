@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>HypeMeter — Live (GDELT + Quotes)</title>
+  <style>
+    :root{ --bg:#0b0c10; --panel:#151827; --text:#eaf0ff; --muted:#aab1c4; --bar:#2a2f3f; --fill:#6da4ff; --up:#24d17e; --down:#ff5470; }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial}
+    header{position:sticky;top:0;z-index:10;background:rgba(11,12,16,.86);backdrop-filter:blur(12px);border-bottom:1px solid #21263b;padding:12px 14px}
+    .rowbar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    h1{font-size:18px;margin:0;font-weight:800;letter-spacing:.3px}
+    .tag{font-size:12px;color:var(--muted);margin-top:2px}
+    .left{display:flex;gap:10px;align-items:center}
+    .flame{font-size:22px}
+    .search{flex:1;background:var(--panel);border:1px solid #29304c;border-radius:10px;padding:10px 12px;color:#fff;min-width:220px}
+    main{padding:14px;max-width:900px;margin:0 auto}
+    .board{background:var(--panel);border:1px solid #21263b;border-radius:12px;overflow:hidden;margin-top:12px}
+    .head,.item{display:grid;grid-template-columns:42px 82px 1fr 1fr;gap:10px;padding:12px;border-top:1px solid #1a1f34}
+    .head{color:var(--muted);border-top:none}
+    .rank{text-align:right;color:var(--muted)}
+    .sub{font-size:12px;color:var(--muted);margin-top:6px}
+    .price{font-size:12px;margin-top:2px}
+    .price.up{color:var(--up)} .price.down{color:var(--down)} .price.flat{color:var(--muted)}
+    .meter{background:var(--bar);border-radius:10px;height:14px;overflow:hidden}
+    .fill{background:var(--fill);height:100%}
+    footer{color:var(--muted);text-align:center;font-size:12px;margin:16px 0}
+    @media(min-width:640px){ .head,.item{grid-template-columns:60px 110px 1.2fr 2fr} }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="rowbar">
+      <div class="left">
+        <div class="flame">🔥</div>
+        <div>
+          <h1>HypeMeter</h1>
+          <div class="tag">Live mentions (last hour) + size-aware hype (demo)</div>
+        </div>
+      </div>
+      <input class="search" id="q" type="search" placeholder="Search tickers… (NVDA, TSLA, BTC)" />
+    </div>
+  </header>
+
+  <main>
+    <section class="board">
+      <div class="head">
+        <div class="rank">#</div>
+        <div>Ticker</div>
+        <div>Name</div>
+        <div>Hype</div>
+      </div>
+      <div id="list"></div>
+    </section>
+
+    <footer>Demo uses GDELT counts (last 60m) + quotes from Finnhub via Netlify Functions.</footer>
+  </main>
+
+<script>
+// ---- CONFIG ----
+const SYMBOLS = [
+  ['NVDA','NVIDIA Corp','Equity'],['AAPL','Apple Inc.','Equity'],['MSFT','Microsoft Corp','Equity'],
+  ['AMZN','Amazon.com Inc','Equity'],['GOOGL','Alphabet Inc.','Equity'],['META','Meta Platforms','Equity'],
+  ['TSLA','Tesla Inc','Equity'],['AMD','Advanced Micro Devices','Equity'],['PLTR','Palantir Technologies','Equity'],
+  ['NFLX','Netflix Inc','Equity'],['COIN','Coinbase Global','Equity'],['GME','GameStop','Equity'],
+  ['AMC','AMC Entertainment','Equity'],['RIVN','Rivian Automotive','Equity'],['SNAP','Snap Inc','Equity'],
+  ['UBER','Uber Technologies','Equity'],['SPOT','Spotify','Equity'],['SHOP','Shopify','Equity'],
+  ['DIS','Walt Disney','Equity'],['NIO','NIO Inc','Equity']
+];
+const WINDOW_MINUTES = 60;
+const REFRESH_MS = 5 * 60 * 1000; // 5 minutes
+
+// ---- Helpers ----
+function rowTemplate(a, i){
+  const pct = Math.max(0, Math.min(100, a.hype));
+  const priceCls = a.chgPct > 0.2 ? 'up' : (a.chgPct < -0.2 ? 'down' : 'flat');
+  const chgStr = isFinite(a.chgPct) ? (a.chgPct>0?'+':'') + a.chgPct.toFixed(2) + '%' : '';
+  return `
+    <div class="item">
+      <div class="rank">${i+1}</div>
+      <div><div class="ticker">${a.t}</div><div class="price ${priceCls}">${chgStr}</div></div>
+      <div>${a.n}<div class="sub">${a.sec}</div></div>
+      <div>
+        <div class="meter"><div class="fill" style="width:${pct}%"></div></div>
+        <div class="sub">Score: ${pct.toFixed(0)} / 100 &nbsp; • mentions: ${a.mentions}</div>
+      </div>
+    </div>`;
+}
+
+function render(rows){
+  const q = document.getElementById('q').value.toLowerCase();
+  const filtered = rows.filter(a => (a.t + ' ' + a.n).toLowerCase().includes(q));
+  const sorted = filtered.sort((a,b)=> b.hype - a.hype);
+  document.getElementById('list').innerHTML = sorted.map(rowTemplate).join('');
+}
+
+async function loadData(){
+  const tickers = SYMBOLS.map(s=>s[0]).join(',');
+  const [mentionsRes, quotesRes] = await Promise.all([
+    fetch(`/.netlify/functions/mentions?tickers=${encodeURIComponent(tickers)}&window=${WINDOW_MINUTES}`),
+    fetch(`/.netlify/functions/quotes?tickers=${encodeURIComponent(tickers)}`)
+  ]);
+  const mentions = await mentionsRes.json();
+  const quotes = await quotesRes.json();
+
+  // simple size-aware hype: normalize mentions vs 30-day baseline stored locally (first run uses current as baseline)
+  const baseline = JSON.parse(localStorage.getItem('baseline')||'{}');
+  const now = Date.now();
+  const out = SYMBOLS.map(([t,n,sec])=>{
+    const m = mentions[t] || 0;
+    const q = quotes[t] || {};
+    const base = baseline[t]?.m || m || 1;
+    const excess = (m - base) / Math.max(1, base); // relative lift vs baseline
+    const volAdj = Math.min(1.5, Math.max(0.6, (q.volRel || 1))); // crude adj on rel volume if available
+    const hype100 = Math.max(0, Math.min(100, 50 + 50 * excess * volAdj)); // center 50, stretch by excess
+    return { t, n, sec, mentions: m, hype: hype100, chgPct: q.chgPct };
+  });
+
+  // Update rolling baseline (EWMA-like)
+  const newBaseline = {...baseline};
+  for(const r of out){
+    const prev = newBaseline[r.t]?.m ?? r.mentions;
+    const smooth = 0.95*prev + 0.05*r.mentions;
+    newBaseline[r.t] = { m: Math.max(1, smooth), ts: now };
+  }
+  localStorage.setItem('baseline', JSON.stringify(newBaseline));
+
+  render(out);
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  document.getElementById('q').addEventListener('input', ()=>{
+    // re-render using latest cached dataset in DOM order (kept simple)
+    const items = Array.from(document.querySelectorAll('.item'));
+    // No-op: search triggers full filter in future enhancement
+    loadData();
+  });
+  loadData();
+  setInterval(loadData, REFRESH_MS);
+});
+</script>
+</body>
+</html>
