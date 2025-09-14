@@ -27,6 +27,9 @@
     .fill{background:var(--fill);height:100%}
     footer{color:var(--muted);text-align:center;font-size:12px;margin:16px 0}
     @media(min-width:640px){ .head,.item{grid-template-columns:60px 110px 1.2fr 2fr} }
+    .tfs{display:inline-flex;gap:6px;background:#151827;border:1px solid #21263b;border-radius:10px;padding:6px}
+    .tf{border:0;background:transparent;color:#aab1c4;padding:8px 10px;border-radius:8px;font-weight:700}
+    .tf.active{background:#1b1f30;color:#fff;box-shadow:inset 0 0 0 1px #2b3150}
   </style>
 </head>
 <body>
@@ -36,11 +39,15 @@
         <div class="flame">🔥</div>
         <div>
           <h1>HypeMeter</h1>
-          <div class="tag">Live mentions (last hour) + size-aware hype (demo)</div>
+          <div class="tag">Live mentions (last hour / 24 hours) + size-aware hype (demo)</div>
         </div>
       </div>
       <input class="search" id="q" type="search" placeholder="Search tickers… (NVDA, TSLA, BTC)" />
     </div>
+    <div class="tfs" role="tablist" style="margin-left:8px">
+  <button class="tf active" data-tf="1h" aria-selected="true">1H</button>
+  <button class="tf" data-tf="24h">24H</button>
+</div>
   </header>
 
   <main>
@@ -58,6 +65,10 @@
   </main>
 
 <script>
+const TF_MIN = { '1h': 60, '24h': 1440 };
+let TF = '1h';                                    // default timeframe
+let LAST_ROWS = [];                                // keep last dataset
+const SPARK_POINTS = 24;                           // (keep if you added sparklines)
 let LAST_ROWS = []; // keep previous dataset
   // ---- CONFIG ----
 const SYMBOLS = [
@@ -101,52 +112,59 @@ function render(rows){
 async function loadData(){
   try {
     const tickers = SYMBOLS.map(s=>s[0]).join(',');
+    const minutes = TF_MIN[TF];
     const [mentionsRes, quotesRes] = await Promise.all([
-      fetch(`/.netlify/functions/mentions?tickers=${encodeURIComponent(tickers)}&window=${WINDOW_MINUTES}`),
+      fetch(`/.netlify/functions/mentions?tickers=${encodeURIComponent(tickers)}&window=${minutes}`),
       fetch(`/.netlify/functions/quotes?tickers=${encodeURIComponent(tickers)}`)
     ]);
-    const mentions = await mentionsRes.json().catch(()=> ({}));
-    const quotes = await quotesRes.json().catch(()=> ({}));
 
-    const prevByT = Object.fromEntries((LAST_ROWS || []).map(r => [r.t, r]));
-    const baseline = JSON.parse(localStorage.getItem('baseline')||'{}');
+    const mentions = await mentionsRes.json().catch(()=> ({}));
+    const quotes   = await quotesRes.json().catch(()=> ({}));
+
+    const BASEKEY = `baseline_${TF}`;                              // <<< baseline per timeframe
+    const baseline = JSON.parse(localStorage.getItem(BASEKEY)||'{}');
     const now = Date.now();
 
+    const prevByT = Object.fromEntries((LAST_ROWS || []).map(r => [r.t, r]));
     const out = SYMBOLS.map(([t,n,sec])=>{
-      const m = mentions[t] ?? (prevByT[t]?.mentions ?? 0);
+      const m = (mentions[t] ?? prevByT[t]?.mentions ?? 0);
       const q = quotes[t] || {};
       const base = baseline[t]?.m || m || 1;
       const excess = (m - base) / Math.max(1, base);
       const volAdj = Math.min(1.5, Math.max(0.6, (q.volRel || 1)));
       const hype100 = Math.max(0, Math.min(100, 50 + 50 * excess * volAdj));
-      // keep previous chgPct if new one is missing
       const chgPct = Number.isFinite(q.chgPct) ? q.chgPct : (prevByT[t]?.chgPct ?? NaN);
       return { t, n, sec, mentions: m, hype: hype100, chgPct };
     });
 
-    // update baseline
+    // smooth & save baseline for this TF
     const newBaseline = {...baseline};
     for (const r of out){
       const prev = newBaseline[r.t]?.m ?? r.mentions;
       const smooth = 0.95*prev + 0.05*r.mentions;
       newBaseline[r.t] = { m: Math.max(1, smooth), ts: now };
     }
-    localStorage.setItem('baseline', JSON.stringify(newBaseline));
+    localStorage.setItem(BASEKEY, JSON.stringify(newBaseline));
 
     render(out);
   } catch {
-    // keep last dataset visible on errors
-    render();
+    render(); // keep last good data
   }
 }
-
 document.addEventListener('DOMContentLoaded', ()=>{
-  document.getElementById('q').addEventListener('input', ()=>{
-    // re-render using latest cached dataset in DOM order (kept simple)
-    const items = Array.from(document.querySelectorAll('.item'));
-    // No-op: search triggers full filter in future enhancement
-    loadData();
+  // --- make search just re-render ---
+  document.getElementById('q').addEventListener('input', ()=> render());
+
+  // --- hook up the 1H / 24H buttons ---
+  document.querySelectorAll('.tf').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('.tf').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      TF = btn.dataset.tf;          // '1h' or '24h'
+      loadData();                   // refetch with the new timeframe
+    });
   });
+
   loadData();
   setInterval(loadData, REFRESH_MS);
 });
