@@ -1,90 +1,124 @@
 // netlify/functions/quotes.js
-// Robust Finnhub quotes with retry, pacing, and 30s in-memory cache.
+const API = 'https://finnhub.io/api/v1';
+const FINNHUB_KEY = process.env.FINNHUB_API_KEY; // set in Netlify env
+const FETCH_TIMEOUT_MS = 10_000;
 
-let CACHE = { ts: 0, data: {} };              // survives warm invocations
-const TTL_MS = 30_000;                        // cache for 30s
-const PER_TICKER_DELAY_MS = 180;              // pace requests (avoid free-tier throttling)
-const MAX_RETRIES = 3;
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 
-export const handler = async (event) => {
-  const key = process.env.FINNHUB_API_KEY;
-  if (!key) return resp(500, { error: "Missing FINNHUB_API_KEY" });
+const cache = new Map(); // `${ticker}` -> { ts, data }
+
+function httpRes(statusCode, bodyObj) {
+  return {
+    statusCode,
+    headers: { 'Content-Type': 'application/json', ...CORS },
+    body: JSON.stringify(bodyObj),
+  };
+}
+
+const withTimeout = (url, opts = {}, ms = FETCH_TIMEOUT_MS) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
+};
+
+const num = (v, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
+async function getQuote(t) {
+  const url = `${API}/quote?symbol=${encodeURIComponent(t)}&token=${FINNHUB_KEY}`;
+  const res = await withTimeout(url);
+  if (!res.ok) throw new Error(`quote ${t} ${res.status}`);
+  const j = await res.json().catch(() => ({}));
+  return {
+    c: num(j.c, NaN),  // current
+    pc: num(j.pc, NaN),// prev close
+    v: num(j.v, NaN),  // today volume
+  };
+}
+
+async function getMetrics(t) {
+  const url = `${API}/stock/metric?symbol=${encodeURIComponent(t)}&metric=all&token=${FINNHUB_KEY}`;
+  const res = await withTimeout(url);
+  if (!res.ok) throw new Error(`metric ${t} ${res.status}`);
+  const j = await res.json().catch(() => ({}));
+  const m = j?.metric || {};
+  const avgVol =
+    num(m['10DayAverageTradingVolume'], NaN) ||
+    num(m['3MonthAverageTradingVolume'], NaN) ||
+    num(m['52WeekAverageVolume'], NaN) ||
+    NaN;
+  return { avgVol };
+}
+
+const computeChgPct = (c, pc) =>
+  (!Number.isFinite(c) || !Number.isFinite(pc) || pc === 0) ? 0 : ((c - pc) / pc) * 100;
+
+const computeVolRel = (todayVol, avgVol) => {
+  if (!Number.isFinite(todayVol) || todayVol <= 0) return 1;
+  if (!Number.isFinite(avgVol) || avgVol <= 0) return 1;
+  const r = todayVol / avgVol;
+  return Math.max(0.3, Math.min(3, r)); // clamp
+};
+
+exports.handler = async (event) => {
+  if (event.httpMethod === 'OPTIONS') return httpRes(200, { ok: true });
 
   try {
+    if (!FINNHUB_KEY) {
+      return httpRes(500, { error: 'Missing FINNHUB_API_KEY env var' });
+    }
+
     const url = new URL(event.rawUrl);
-    const tickers = (url.searchParams.get("tickers") || "")
-      .split(",").map(s => s.trim()).filter(Boolean);
+    const tickersParam = url.searchParams.get('tickers') || '';
+    const tickers = tickersParam.split(',')
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
 
-    if (!tickers.length) return resp(400, { error: "tickers required" });
-
-    // Serve fresh-enough cache to avoid flicker under rate limits
-    const now = Date.now();
-    if (now - CACHE.ts < TTL_MS) {
-      // return only the subset requested
-      const subset = {};
-      for (const t of tickers) subset[t] = CACHE.data[t] || {};
-      return resp(200, subset, true);
+    if (tickers.length === 0) {
+      return httpRes(400, { error: 'tickers required, e.g. ?tickers=NVDA,AAPL' });
     }
 
     const out = {};
-    for (const t of tickers) {
-      out[t] = await fetchWithRetry(() =>
-        fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(t)}&token=${key}`)
-      );
-      // normalize shape
-      if (out[t]?.ok && out[t].json) {
-        const j = out[t].json;
-        out[t] = { price: j.c, chgPct: j.dp, volRel: 1 };
-      } else {
-        out[t] = {}; // on failure keep empty; UI will hold last value
+    const now = Date.now();
+
+    // tiny concurrency limiter (be kind to Finnhub)
+    const MAX_CONCURRENT = 4;
+    let i = 0;
+    async function worker() {
+      while (i < tickers.length) {
+        const t = tickers[i++];
+        try {
+          const cached = cache.get(t);
+          if (cached && now - cached.ts < 30_000) { // 30s cache
+            out[t] = cached.data;
+            continue;
+          }
+
+          const [q, m] = await Promise.allSettled([getQuote(t), getMetrics(t)]);
+          const quote = q.status === 'fulfilled' ? q.value : { c: NaN, pc: NaN, v: NaN };
+          const metrics = m.status === 'fulfilled' ? m.value : { avgVol: NaN };
+
+          const chgPct = num(computeChgPct(quote.c, quote.pc), 0);
+          const volRel = num(computeVolRel(quote.v, metrics.avgVol), 1);
+
+          const data = { chgPct, volRel };
+          out[t] = data;
+          cache.set(t, { ts: now, data });
+        } catch {
+          out[t] = { chgPct: 0, volRel: 1 };
+        }
       }
-      await delay(PER_TICKER_DELAY_MS);
     }
 
-    // update cache if at least one succeeded
-    const anyGood = Object.values(out).some(v => Number.isFinite(v?.price) || Number.isFinite(v?.chgPct));
-    if (anyGood) {
-      CACHE = { ts: now, data: { ...CACHE.data, ...out } };
-    }
-
-    // return merged: prefer fresh, fall back to cache when empty
-    const merged = {};
-    for (const t of tickers) {
-      merged[t] = (Object.keys(out[t]).length ? out[t] : (CACHE.data[t] || {}));
-    }
-    return resp(200, merged);
-  } catch (e) {
-    return resp(500, { error: String(e) });
+    await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT, tickers.length) }, worker));
+    return httpRes(200, out);
+  } catch (err) {
+    return httpRes(500, { error: 'quotes failed', detail: String(err?.message || err) });
   }
 };
-
-async function fetchWithRetry(fn) {
-  let lastErr = null, json = null;
-  for (let i = 0; i < MAX_RETRIES; i++) {
-    try {
-      const r = await fn();
-      if (r.ok) {
-        json = await r.json();
-        return { ok: true, json };
-      }
-      lastErr = new Error(`HTTP ${r.status}`);
-    } catch (e) { lastErr = e; }
-    await delay(200 * (i + 1)); // backoff
-  }
-  return { ok: false, error: String(lastErr || "unknown") };
-}
-
-function delay(ms){ return new Promise(res => setTimeout(res, ms)); }
-
-function resp(statusCode, body, cached=false){
-  return {
-    statusCode,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      // help browser/CDN cache briefly too
-      "Cache-Control": cached ? "public, max-age=15" : "no-store"
-    },
-    body: JSON.stringify(body)
-  };
-}
