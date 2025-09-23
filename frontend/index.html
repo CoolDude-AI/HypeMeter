@@ -287,6 +287,25 @@
             border-radius: 4px;
             transition: width 0.8s ease;
         }
+
+        .api-status {
+            background: #f7fafc;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+            color: #4a5568;
+            text-align: center;
+        }
+
+        .debug-info {
+            background: #f0f4f8;
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 10px;
+            font-size: 0.8em;
+            color: #4a5568;
+        }
     </style>
 </head>
 <body>
@@ -294,6 +313,10 @@
         <div class="header">
             <h1>📈 HypeMeter</h1>
             <p>Real-time stock hype tracking • Quantifying market attention</p>
+        </div>
+
+        <div class="api-status" id="apiStatus">
+            🔗 Connected to: hypemeter.onrender.com
         </div>
 
         <div class="controls">
@@ -327,7 +350,7 @@
     </div>
 
     <script>
-        // Configuration - Replace with your Render backend URL
+        // Configuration - Your working Render backend URL
         const API_BASE_URL = 'https://hypemeter.onrender.com';
         
         let autoRefreshInterval = null;
@@ -335,6 +358,27 @@
 
         // Default symbols
         const DEFAULT_SYMBOLS = ['NVDA', 'AAPL', 'TSLA', 'MSFT', 'GOOGL'];
+
+        // Test backend connection on page load
+        async function testBackendConnection() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/health`);
+                const data = await response.json();
+                
+                if (data.status === 'ok') {
+                    document.getElementById('apiStatus').innerHTML = '✅ Backend connected: ' + API_BASE_URL;
+                    document.getElementById('apiStatus').style.background = '#c6f6d5';
+                    document.getElementById('apiStatus').style.color = '#276749';
+                } else {
+                    throw new Error('Backend not responding properly');
+                }
+            } catch (error) {
+                console.error('Backend connection failed:', error);
+                document.getElementById('apiStatus').innerHTML = '❌ Backend connection failed: ' + error.message;
+                document.getElementById('apiStatus').style.background = '#fed7d7';
+                document.getElementById('apiStatus').style.color = '#c53030';
+            }
+        }
 
         function showStatus(message, type) {
             const status = document.getElementById('status');
@@ -368,10 +412,11 @@
             if (num >= 1000) {
                 return (num / 1000).toFixed(1) + 'K';
             }
-            return num.toString();
+            return num ? num.toString() : '0';
         }
 
         function formatPrice(price) {
+            if (!price) return 'N/A';
             return new Intl.NumberFormat('en-US', {
                 style: 'currency',
                 currency: 'USD',
@@ -381,7 +426,7 @@
         }
 
         function formatPercent(percent) {
-            if (percent === null || percent === undefined) return 'N/A';
+            if (percent === null || percent === undefined || isNaN(percent)) return 'N/A';
             const sign = percent >= 0 ? '+' : '';
             return `${sign}${percent.toFixed(2)}%`;
         }
@@ -393,8 +438,18 @@
         }
 
         function createStockCard(data) {
-            const changeClass = getChangeClass(data.change);
+            const changeClass = getChangeClass(data.change || 0);
             const hypeColor = data.hypeScore >= 70 ? '#e53e3e' : data.hypeScore >= 40 ? '#d69e2e' : '#38a169';
+            
+            // Debug information
+            const debugInfo = data.debug ? `
+                <div class="debug-info">
+                    <strong>Debug:</strong><br>
+                    Mentions: ${data.mentions || 0} ${data.debug.mentionData?.note ? '(' + data.debug.mentionData.note + ')' : ''}<br>
+                    Price Data: ${data.debug.quoteData?.error || 'OK'}<br>
+                    Hype Calculation: ${data.hypeScore}/100
+                </div>
+            ` : '';
             
             return `
                 <div class="stock-card">
@@ -403,7 +458,7 @@
                         <div class="hype-score" style="background: ${hypeColor}">${data.hypeScore}/100</div>
                     </div>
                     
-                    <div class="stock-price">${data.price ? formatPrice(data.price) : 'N/A'}</div>
+                    <div class="stock-price">${formatPrice(data.price)}</div>
                     <div class="price-change ${changeClass}">
                         ${data.change ? formatPrice(data.change) : 'N/A'} 
                         (${formatPercent(data.changePercent)})
@@ -415,14 +470,16 @@
                     
                     <div class="stock-metrics">
                         <div class="metric">
-                            <span class="metric-value">${data.mentions || 0}</span>
+                            <span class="metric-value">${formatNumber(data.mentions || 0)}</span>
                             <div class="metric-label">Mentions</div>
                         </div>
                         <div class="metric">
-                            <span class="metric-value">${data.volume ? formatNumber(data.volume) : 'N/A'}</span>
+                            <span class="metric-value">${formatNumber(data.volume || 0)}</span>
                             <div class="metric-label">Volume</div>
                         </div>
                     </div>
+                    
+                    ${debugInfo}
                 </div>
             `;
         }
@@ -440,6 +497,8 @@
             showStatus('Fetching real-time hype data...', 'loading');
 
             try {
+                console.log('Fetching from:', `${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`);
+                
                 const response = await fetch(`${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`);
                 
                 if (!response.ok) {
@@ -447,9 +506,19 @@
                 }
 
                 const data = await response.json();
+                console.log('Received data:', data);
                 
-                // Sort by hype score (descending)
-                const sortedData = Object.values(data).sort((a, b) => b.hypeScore - a.hypeScore);
+                // Check if we got error response
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Convert to array and sort by hype score (descending)
+                const sortedData = Object.values(data).sort((a, b) => (b.hypeScore || 0) - (a.hypeScore || 0));
+                
+                if (sortedData.length === 0) {
+                    throw new Error('No data received from API');
+                }
                 
                 const stockGrid = document.getElementById('stockGrid');
                 stockGrid.innerHTML = sortedData.map(stock => createStockCard(stock)).join('');
@@ -496,14 +565,18 @@
             }
         });
 
-        // Initialize with default data
+        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            // Update API base URL instruction
-            if (API_BASE_URL.includes('your-hypemeter-api')) {
-                showStatus('⚠️ Please update API_BASE_URL in the script to your Render backend URL', 'error');
-            } else {
+            console.log('HypeMeter frontend loaded');
+            console.log('API Base URL:', API_BASE_URL);
+            
+            // Test backend connection
+            testBackendConnection();
+            
+            // Load initial data after a short delay
+            setTimeout(() => {
                 fetchHypeData();
-            }
+            }, 1000);
         });
     </script>
 </body>
