@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: hypemeter-api
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FINNHUB_API_KEY
+        sync: false # Set this in Render dashboard
+    healthCheckPath: /health
+    autoDeploy: true
+    scaling:
+      minInstances: 1
+      maxInstances: 3
