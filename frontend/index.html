@@ -3,580 +3,111 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HypeMeter - Stock Hype Tracker</title>
+    <title>HypeMeter Test</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
         body {
-            font-family: 'Arial', sans-serif;
+            font-family: Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333;
-            min-height: 100vh;
+            color: white;
             padding: 20px;
+            text-align: center;
         }
-
         .container {
-            max-width: 1200px;
+            max-width: 800px;
             margin: 0 auto;
-            background: rgba(255, 255, 255, 0.95);
+            background: rgba(255, 255, 255, 0.1);
+            padding: 40px;
             border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
         }
-
-        .header {
-            text-align: center;
-            margin-bottom: 40px;
-        }
-
-        .header h1 {
-            color: #4a5568;
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            background: linear-gradient(45deg, #667eea, #764ba2);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .header p {
-            color: #718096;
-            font-size: 1.1em;
-        }
-
-        .controls {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 30px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-
-        .input-group {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
-        input, select, button {
-            padding: 12px 16px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: all 0.3s ease;
-        }
-
-        input:focus, select:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-
         button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #4CAF50;
             color: white;
+            padding: 15px 30px;
             border: none;
+            border-radius: 5px;
             cursor: pointer;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 16px;
+            margin: 10px;
         }
-
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
-        }
-
-        button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .status {
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-weight: 500;
-            text-align: center;
-        }
-
-        .status.loading {
-            background: #bee3f8;
-            color: #2b6cb0;
-            border: 1px solid #90cdf4;
-        }
-
-        .status.error {
-            background: #fed7d7;
-            color: #c53030;
-            border: 1px solid #fc8181;
-        }
-
-        .status.success {
-            background: #c6f6d5;
-            color: #276749;
-            border: 1px solid #9ae6b4;
-        }
-
-        .stock-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
+        #result {
             margin-top: 20px;
-        }
-
-        .stock-card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
-            border: 1px solid #e2e8f0;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .stock-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.15);
-        }
-
-        .stock-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        .stock-symbol {
-            font-size: 1.4em;
-            font-weight: bold;
-            color: #2d3748;
-        }
-
-        .hype-score {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 1.1em;
-        }
-
-        .stock-price {
-            font-size: 1.8em;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-
-        .price-change {
-            font-size: 1.1em;
-            font-weight: 600;
-            margin-bottom: 15px;
-        }
-
-        .positive {
-            color: #38a169;
-        }
-
-        .negative {
-            color: #e53e3e;
-        }
-
-        .neutral {
-            color: #718096;
-        }
-
-        .stock-metrics {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-top: 20px;
-        }
-
-        .metric {
-            text-align: center;
-            padding: 12px;
-            background: #f7fafc;
-            border-radius: 8px;
-            border: 1px solid #e2e8f0;
-        }
-
-        .metric-value {
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #2d3748;
-            display: block;
-        }
-
-        .metric-label {
-            font-size: 0.85em;
-            color: #718096;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 4px;
-        }
-
-        .last-updated {
-            text-align: center;
-            color: #718096;
-            font-size: 0.9em;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #e2e8f0;
-        }
-
-        .refresh-info {
-            background: #edf2f7;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            text-align: center;
-            color: #4a5568;
-        }
-
-        @media (max-width: 768px) {
-            .controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .input-group {
-                flex-direction: column;
-            }
-
-            .stock-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        .loading-spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #ffffff;
-            border-radius: 50%;
-            border-top-color: transparent;
-            animation: spin 1s linear infinite;
-            margin-right: 10px;
-        }
-
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
-        }
-
-        .hype-bar {
-            width: 100%;
-            height: 8px;
-            background: #e2e8f0;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 10px;
-        }
-
-        .hype-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #48bb78, #38a169, #2f855a);
-            border-radius: 4px;
-            transition: width 0.8s ease;
-        }
-
-        .api-status {
-            background: #f7fafc;
-            padding: 10px 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-size: 0.9em;
-            color: #4a5568;
-            text-align: center;
-        }
-
-        .debug-info {
-            background: #f0f4f8;
-            padding: 10px;
-            border-radius: 6px;
-            margin-top: 10px;
-            font-size: 0.8em;
-            color: #4a5568;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>📈 HypeMeter</h1>
-            <p>Real-time stock hype tracking • Quantifying market attention</p>
+        <h1>🧪 HypeMeter Debug Test</h1>
+        <p>If you can see this, Cloudflare Pages is working!</p>
+        
+        <h2>Step 1: Basic Functionality</h2>
+        <button onclick="testBasic()">Test Basic JavaScript</button>
+        
+        <h2>Step 2: Backend Connection</h2>
+        <button onclick="testBackend()">Test Backend Connection</button>
+        
+        <h2>Step 3: API Call</h2>
+        <button onclick="testAPI()">Test API Call</button>
+        
+        <div id="result">
+            <strong>Results will appear here...</strong>
         </div>
-
-        <div class="api-status" id="apiStatus">
-            🔗 Connected to: hypemeter.onrender.com
-        </div>
-
-        <div class="controls">
-            <div class="input-group">
-                <input type="text" id="tickerInput" placeholder="Enter tickers (e.g., NVDA,AAPL,TSLA)" 
-                       value="NVDA,AAPL,TSLA,MSFT,GOOGL">
-            </div>
-            <div class="input-group">
-                <select id="timeWindow">
-                    <option value="60">Last 60 minutes</option>
-                    <option value="120">Last 2 hours</option>
-                    <option value="240">Last 4 hours</option>
-                    <option value="480">Last 8 hours</option>
-                </select>
-            </div>
-            <button id="fetchData" onclick="fetchHypeData()">
-                <span id="buttonText">Get Hype Scores</span>
-            </button>
-            <button id="autoRefresh" onclick="toggleAutoRefresh()">Auto Refresh: OFF</button>
-        </div>
-
-        <div class="refresh-info">
-            💡 Data refreshes automatically every 5 minutes when auto-refresh is enabled
-        </div>
-
-        <div id="status" class="status" style="display: none;"></div>
-
-        <div id="stockGrid" class="stock-grid"></div>
-
-        <div class="last-updated" id="lastUpdated"></div>
     </div>
 
     <script>
-        // Configuration - Your working Render backend URL
         const API_BASE_URL = 'https://hypemeter.onrender.com';
         
-        let autoRefreshInterval = null;
-        let isAutoRefreshEnabled = false;
-
-        // Default symbols
-        const DEFAULT_SYMBOLS = ['NVDA', 'AAPL', 'TSLA', 'MSFT', 'GOOGL'];
-
-        // Test backend connection on page load
-        async function testBackendConnection() {
+        function showResult(message, isError = false) {
+            const result = document.getElementById('result');
+            result.innerHTML = `
+                <strong style="color: ${isError ? '#ff4444' : '#44ff44'};">
+                    ${isError ? '❌' : '✅'} ${message}
+                </strong>
+            `;
+            console.log(message);
+        }
+        
+        function testBasic() {
+            showResult('JavaScript is working! Current time: ' + new Date().toLocaleString());
+        }
+        
+        async function testBackend() {
             try {
-                const response = await fetch(`${API_BASE_URL}/health`);
+                showResult('Testing backend connection...');
+                
+                const response = await fetch(API_BASE_URL + '/health');
                 const data = await response.json();
                 
                 if (data.status === 'ok') {
-                    document.getElementById('apiStatus').innerHTML = '✅ Backend connected: ' + API_BASE_URL;
-                    document.getElementById('apiStatus').style.background = '#c6f6d5';
-                    document.getElementById('apiStatus').style.color = '#276749';
+                    showResult(`Backend connected! Status: ${data.status}, Time: ${data.timestamp}`);
                 } else {
-                    throw new Error('Backend not responding properly');
+                    showResult('Backend responded but status is not ok: ' + JSON.stringify(data), true);
                 }
             } catch (error) {
-                console.error('Backend connection failed:', error);
-                document.getElementById('apiStatus').innerHTML = '❌ Backend connection failed: ' + error.message;
-                document.getElementById('apiStatus').style.background = '#fed7d7';
-                document.getElementById('apiStatus').style.color = '#c53030';
+                showResult('Backend connection failed: ' + error.message, true);
             }
         }
-
-        function showStatus(message, type) {
-            const status = document.getElementById('status');
-            status.textContent = message;
-            status.className = `status ${type}`;
-            status.style.display = 'block';
-        }
-
-        function hideStatus() {
-            const status = document.getElementById('status');
-            status.style.display = 'none';
-        }
-
-        function setButtonLoading(loading) {
-            const button = document.getElementById('fetchData');
-            const buttonText = document.getElementById('buttonText');
-            
-            if (loading) {
-                button.disabled = true;
-                buttonText.innerHTML = '<span class="loading-spinner"></span>Fetching...';
-            } else {
-                button.disabled = false;
-                buttonText.textContent = 'Get Hype Scores';
-            }
-        }
-
-        function formatNumber(num) {
-            if (num >= 1000000) {
-                return (num / 1000000).toFixed(1) + 'M';
-            }
-            if (num >= 1000) {
-                return (num / 1000).toFixed(1) + 'K';
-            }
-            return num ? num.toString() : '0';
-        }
-
-        function formatPrice(price) {
-            if (!price) return 'N/A';
-            return new Intl.NumberFormat('en-US', {
-                style: 'currency',
-                currency: 'USD',
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2
-            }).format(price);
-        }
-
-        function formatPercent(percent) {
-            if (percent === null || percent === undefined || isNaN(percent)) return 'N/A';
-            const sign = percent >= 0 ? '+' : '';
-            return `${sign}${percent.toFixed(2)}%`;
-        }
-
-        function getChangeClass(change) {
-            if (change > 0) return 'positive';
-            if (change < 0) return 'negative';
-            return 'neutral';
-        }
-
-        function createStockCard(data) {
-            const changeClass = getChangeClass(data.change || 0);
-            const hypeColor = data.hypeScore >= 70 ? '#e53e3e' : data.hypeScore >= 40 ? '#d69e2e' : '#38a169';
-            
-            // Debug information
-            const debugInfo = data.debug ? `
-                <div class="debug-info">
-                    <strong>Debug:</strong><br>
-                    Mentions: ${data.mentions || 0} ${data.debug.mentionData?.note ? '(' + data.debug.mentionData.note + ')' : ''}<br>
-                    Price Data: ${data.debug.quoteData?.error || 'OK'}<br>
-                    Hype Calculation: ${data.hypeScore}/100
-                </div>
-            ` : '';
-            
-            return `
-                <div class="stock-card">
-                    <div class="stock-header">
-                        <div class="stock-symbol">${data.symbol}</div>
-                        <div class="hype-score" style="background: ${hypeColor}">${data.hypeScore}/100</div>
-                    </div>
-                    
-                    <div class="stock-price">${formatPrice(data.price)}</div>
-                    <div class="price-change ${changeClass}">
-                        ${data.change ? formatPrice(data.change) : 'N/A'} 
-                        (${formatPercent(data.changePercent)})
-                    </div>
-                    
-                    <div class="hype-bar">
-                        <div class="hype-fill" style="width: ${data.hypeScore}%; background: ${hypeColor}"></div>
-                    </div>
-                    
-                    <div class="stock-metrics">
-                        <div class="metric">
-                            <span class="metric-value">${formatNumber(data.mentions || 0)}</span>
-                            <div class="metric-label">Mentions</div>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-value">${formatNumber(data.volume || 0)}</span>
-                            <div class="metric-label">Volume</div>
-                        </div>
-                    </div>
-                    
-                    ${debugInfo}
-                </div>
-            `;
-        }
-
-        async function fetchHypeData() {
-            const tickerInput = document.getElementById('tickerInput').value.trim();
-            const timeWindow = document.getElementById('timeWindow').value;
-            
-            if (!tickerInput) {
-                showStatus('Please enter at least one ticker symbol', 'error');
-                return;
-            }
-
-            setButtonLoading(true);
-            showStatus('Fetching real-time hype data...', 'loading');
-
+        
+        async function testAPI() {
             try {
-                console.log('Fetching from:', `${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`);
+                showResult('Testing API call...');
                 
-                const response = await fetch(`${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`);
-                
-                if (!response.ok) {
-                    throw new Error(`API Error: ${response.status} ${response.statusText}`);
-                }
-
+                const response = await fetch(API_BASE_URL + '/api/hype?tickers=AAPL&window=60');
                 const data = await response.json();
-                console.log('Received data:', data);
                 
-                // Check if we got error response
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-                
-                // Convert to array and sort by hype score (descending)
-                const sortedData = Object.values(data).sort((a, b) => (b.hypeScore || 0) - (a.hypeScore || 0));
-                
-                if (sortedData.length === 0) {
-                    throw new Error('No data received from API');
-                }
-                
-                const stockGrid = document.getElementById('stockGrid');
-                stockGrid.innerHTML = sortedData.map(stock => createStockCard(stock)).join('');
-                
-                // Update last updated time
-                const lastUpdated = document.getElementById('lastUpdated');
-                lastUpdated.textContent = `Last updated: ${new Date().toLocaleString()}`;
-                
-                hideStatus();
+                showResult('API Response: ' + JSON.stringify(data, null, 2));
                 
             } catch (error) {
-                console.error('Error fetching hype data:', error);
-                showStatus(`Error: ${error.message}`, 'error');
-            } finally {
-                setButtonLoading(false);
+                showResult('API call failed: ' + error.message, true);
             }
         }
-
-        function toggleAutoRefresh() {
-            const button = document.getElementById('autoRefresh');
-            
-            if (isAutoRefreshEnabled) {
-                // Turn off auto refresh
-                clearInterval(autoRefreshInterval);
-                isAutoRefreshEnabled = false;
-                button.textContent = 'Auto Refresh: OFF';
-                button.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-            } else {
-                // Turn on auto refresh
-                autoRefreshInterval = setInterval(fetchHypeData, 5 * 60 * 1000); // 5 minutes
-                isAutoRefreshEnabled = true;
-                button.textContent = 'Auto Refresh: ON';
-                button.style.background = 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)';
-                
-                // Fetch data immediately
-                fetchHypeData();
-            }
-        }
-
-        // Event listeners
-        document.getElementById('tickerInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                fetchHypeData();
-            }
-        });
-
-        // Initialize
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('HypeMeter frontend loaded');
-            console.log('API Base URL:', API_BASE_URL);
-            
-            // Test backend connection
-            testBackendConnection();
-            
-            // Load initial data after a short delay
-            setTimeout(() => {
-                fetchHypeData();
-            }, 1000);
+        
+        // Auto-test on page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded successfully');
+            showResult('Page loaded! Ready for testing.');
         });
     </script>
 </body>
