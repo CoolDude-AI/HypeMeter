@@ -6,10 +6,10 @@ const app = express();
 // CORS configuration for Cloudflare frontend
 app.use(cors({
   origin: [
+    'https://cooldude-ai.github.io',  // Add this line
     'https://4718c399.hypemeter.pages.dev',
     'https://hypemeter.pages.dev',
-    'http://localhost:3000',
-    'http://localhost:8000'
+    'http://localhost:3000'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
