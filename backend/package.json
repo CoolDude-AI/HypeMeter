@@ -1,7 +1,7 @@
 {
   "name": "hypemeter-api",
-  "version": "1.0.0",
-  "description": "Stock hype tracker API for measuring online attention and market activity",
+  "version": "3.5.0",
+  "description": "Stock hype tracker API with multi-source social sentiment",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,15 +13,16 @@
     "hype",
     "trading",
     "api",
-    "finnhub",
-    "gdelt"
+    "sentiment"
   ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "google-trends-api": "^4.9.2",
+    "@atproto/api": "^0.12.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
