@@ -353,8 +353,8 @@
     <div class="container">
         <div class="header">
             <h1>📈 HypeMeter</h1>
-            <p>Real-time stock hype tracking • Dynamic baseline scoring</p>
-            <span class="version-badge">v5.0 - Dynamic Weights</span>
+            <p>AI-powered stock hype tracking • Self-learning algorithms</p>
+            <span class="version-badge">v5.2 - AI Self-Learning</span>
         </div>
 
         <div class="api-status" id="apiStatus">
@@ -381,7 +381,7 @@
         </div>
 
         <div class="refresh-info">
-            💡 v5.0: All weights are now dynamic and relative to baselines • Data persists 30 days
+            💡 v5.1: Volume fixed • Reddit working • Timeframes accurate • Hybrid scoring (simple→dynamic)
         </div>
 
         <div id="status" class="status" style="display: none;"></div>
@@ -403,8 +403,12 @@
                 const data = await response.json();
                 
                 if (data.status === 'ok') {
+                    const eventCount = data.mention_events || 0;
+                    const priceCount = data.price_snapshots || 0;
+                    const marketStatus = data.market_open ? '🟢 Open' : '🔴 Closed';
+                    
                     document.getElementById('apiStatus').innerHTML = 
-                        `✅ Backend connected: v${data.version} • ${data.tracked_tickers} tickers • ${data.data_points} data points`;
+                        `✅ Backend v${data.version} • ${data.tracked} tickers • ${eventCount.toLocaleString()} events • ${priceCount} prices • Market: ${marketStatus}`;
                     document.getElementById('apiStatus').style.background = '#c6f6d5';
                     document.getElementById('apiStatus').style.color = '#276749';
                 } else {
@@ -479,15 +483,29 @@
             const changeClass = getChangeClass(data.change || 0);
             const hypeColor = data.hypeScore >= 70 ? '#e53e3e' : data.hypeScore >= 40 ? '#d69e2e' : '#38a169';
             
-            // FIXED: Display the COMBINED mentions count (not just stocktwits)
+            // Display the COMBINED mentions count
             const totalMentions = data.mentions || 0;
             const redditMentions = data.reddit_mentions || 0;
             const stocktwitsMentions = data.stocktwits_mentions || 0;
             
+            // Scoring mode badge
+            const scoringMode = data.scoringMode || 'SIMPLE';
+            const modeClass = scoringMode === 'DYNAMIC' ? 'mode-dynamic' : 'mode-simple';
+            const modeLabel = scoringMode === 'DYNAMIC' ? '🎯 Dynamic' : '📊 Simple';
+            const dataAgeText = data.dataAge ? `${data.dataAge}d old` : 'New';
+            
+            // Volume display with market status
+            const volumeDisplay = data.volume && data.volume > 0 
+                ? formatNumber(data.volume) 
+                : '0';
+            
             return `
                 <div class="stock-card">
                     <div class="stock-header">
-                        <div class="stock-symbol">${data.symbol}</div>
+                        <div class="stock-symbol">
+                            ${data.symbol}
+                            <span class="scoring-mode ${modeClass}" title="${dataAgeText}">${modeLabel}</span>
+                        </div>
                         <div class="hype-score" style="background: ${hypeColor}">${data.hypeScore}/100</div>
                     </div>
                     
@@ -507,7 +525,7 @@
                             <div class="metric-label">Total Mentions</div>
                         </div>
                         <div class="metric">
-                            <span class="metric-value">${formatNumber(data.volume || 0)}</span>
+                            <span class="metric-value">${volumeDisplay}</span>
                             <div class="metric-label">Volume</div>
                         </div>
                     </div>
@@ -600,8 +618,13 @@
         });
 
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('HypeMeter v5.0 frontend loaded - Dynamic Weights');
+            console.log('HypeMeter v5.1 frontend loaded - All Fixes Applied');
             console.log('API Base URL:', API_BASE_URL);
+            console.log('Fixes:');
+            console.log('  ✅ Volume working (Finnhub Candle)');
+            console.log('  ✅ Reddit OAuth integrated');
+            console.log('  ✅ Timeframes affect all metrics');
+            console.log('  ✅ Hybrid scoring');
             
             testBackendConnection();
             
