@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const googleTrends = require('google-trends-api');
+const { BskyAgent } = require('@atproto/api');
 const app = express();
 
 class BackgroundCollector {
@@ -10,11 +12,39 @@ class BackgroundCollector {
     this.redditToken = null;
     this.redditTokenExpiry = 0;
     this.redditWorking = false;
+    this.blueskyAgent = null;
+    this.blueskyWorking = false;
     
     this.trackedTickers = new Set([
       'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'AMD',
       'GME', 'AMC', 'SPY', 'QQQ', 'COIN', 'NFLX', 'PLTR', 'MSTR', 'SOFI'
     ]);
+    
+    // Initialize Bluesky
+    this.initBluesky();
+  }
+
+  async initBluesky() {
+    const username = process.env.BLUESKY_USERNAME;
+    const password = process.env.BLUESKY_PASSWORD;
+    
+    if (!username || !password) {
+      console.log('⚠️  Bluesky credentials not configured');
+      return;
+    }
+
+    try {
+      this.blueskyAgent = new BskyAgent({ service: 'https://bsky.social' });
+      await this.blueskyAgent.login({
+        identifier: username,
+        password: password
+      });
+      this.blueskyWorking = true;
+      console.log('✅ Bluesky authenticated');
+    } catch (e) {
+      console.log('⚠️  Bluesky auth failed:', e.message);
+      this.blueskyWorking = false;
+    }
   }
 
   async getRedditToken() {
@@ -36,7 +66,7 @@ class BackgroundCollector {
         headers: {
           'Authorization': `Basic ${auth}`,
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'HypeMeter/3.3'
+          'User-Agent': 'HypeMeter/3.5'
         },
         body: 'grant_type=client_credentials'
       });
@@ -59,7 +89,6 @@ class BackgroundCollector {
     return null;
   }
 
-  // REDDIT - Use /new instead of /search (more reliable)
   async collectReddit(ticker) {
     const token = await this.getRedditToken();
     if (!token) return { mentions: 0, posts: 0 };
@@ -75,13 +104,12 @@ class BackgroundCollector {
     
     for (const sub of subreddits) {
       try {
-        // Get recent posts from /new (100 posts, most recent)
         const url = `https://oauth.reddit.com/r/${sub}/new?limit=100`;
         
         const response = await fetch(url, {
           headers: {
             'Authorization': `Bearer ${token}`,
-            'User-Agent': 'HypeMeter/3.3'
+            'User-Agent': 'HypeMeter/3.5'
           }
         });
 
@@ -89,7 +117,6 @@ class BackgroundCollector {
           const data = await response.json();
           
           if (data?.data?.children) {
-            // Filter to last hour and search for ticker
             const recent = data.data.children.filter(p => p.data.created_utc > oneHourAgo);
             
             recent.forEach(post => {
@@ -97,12 +124,9 @@ class BackgroundCollector {
               const text = (post.data.selftext || '').toUpperCase();
               const combined = `${title} ${text}`;
               
-              // Check if ticker is mentioned
               const patterns = [
                 new RegExp(`\\$${ticker}\\b`, 'g'),
-                new RegExp(`\\b${ticker}\\b`, 'g'),
-                new RegExp(`\\b${ticker}\\s`, 'g'),
-                new RegExp(`\\s${ticker}\\b`, 'g')
+                new RegExp(`\\b${ticker}\\b`, 'g')
               ];
               
               let foundInPost = false;
@@ -121,12 +145,74 @@ class BackgroundCollector {
         }
         
         await new Promise(r => setTimeout(r, 150));
-      } catch (e) {
-        console.log(`  Reddit r/${sub} error:`, e.message);
-      }
+      } catch (e) {}
     }
     
     return { mentions: totalMentions, posts: totalPosts };
+  }
+
+  // BLUESKY - New!
+  async collectBluesky(ticker) {
+    if (!this.blueskyAgent || !this.blueskyWorking) {
+      return { mentions: 0, posts: 0 };
+    }
+
+    try {
+      // Search for posts with the ticker
+      const queries = [`$${ticker}`, ticker];
+      let totalMentions = 0;
+      let totalPosts = 0;
+      const oneHourAgo = Date.now() - (60 * 60 * 1000);
+      
+      for (const query of queries) {
+        try {
+          const result = await this.blueskyAgent.api.app.bsky.feed.searchPosts({
+            q: query,
+            limit: 100
+          });
+          
+          if (result.data?.posts) {
+            // Filter to last hour
+            const recentPosts = result.data.posts.filter(post => {
+              const postTime = new Date(post.indexedAt).getTime();
+              return postTime > oneHourAgo;
+            });
+            
+            // Count mentions in each post
+            recentPosts.forEach(post => {
+              const text = (post.record?.text || '').toUpperCase();
+              
+              const patterns = [
+                new RegExp(`\\$${ticker}\\b`, 'g'),
+                new RegExp(`\\b${ticker}\\b`, 'g')
+              ];
+              
+              let foundInPost = false;
+              patterns.forEach(p => {
+                const matches = text.match(p) || [];
+                if (matches.length > 0) {
+                  totalMentions += matches.length;
+                  if (!foundInPost) {
+                    totalPosts++;
+                    foundInPost = true;
+                  }
+                }
+              });
+            });
+          }
+          
+          await new Promise(r => setTimeout(r, 200));
+        } catch (queryError) {
+          console.log(`  Bluesky query error for ${query}:`, queryError.message);
+        }
+      }
+      
+      return { mentions: totalMentions, posts: totalPosts };
+      
+    } catch (e) {
+      console.log(`  Bluesky error for ${ticker}:`, e.message);
+      return { mentions: 0, posts: 0 };
+    }
   }
 
   async collectStocktwits(ticker) {
@@ -173,6 +259,45 @@ class BackgroundCollector {
     return { news: 0, total: 0 };
   }
 
+  async collectGoogleTrends(ticker) {
+    try {
+      const endTime = new Date();
+      const startTime = new Date(Date.now() - (60 * 60 * 1000));
+      
+      const queries = [`${ticker} stock`, `$${ticker}`, ticker];
+      
+      const result = await googleTrends.interestOverTime({
+        keyword: queries,
+        startTime: startTime,
+        endTime: endTime,
+        granularTimeResolution: true
+      });
+      
+      const data = JSON.parse(result);
+      
+      if (data.default?.timelineData) {
+        const recentPoints = data.default.timelineData.slice(-5);
+        
+        let totalInterest = 0;
+        let count = 0;
+        
+        recentPoints.forEach(point => {
+          point.value?.forEach(val => {
+            if (val !== null && val !== undefined) {
+              totalInterest += parseInt(val);
+              count++;
+            }
+          });
+        });
+        
+        const avgInterest = count > 0 ? Math.round(totalInterest / count) : 0;
+        return { interest: avgInterest, normalized: avgInterest };
+      }
+      
+    } catch (e) {}
+    return { interest: 0, normalized: 0 };
+  }
+
   async collectPriceData(ticker) {
     const apiKey = process.env.FINNHUB_API_KEY;
     if (!apiKey) return null;
@@ -199,34 +324,40 @@ class BackgroundCollector {
         
         return snapshot;
       }
-    } catch (e) {
-      console.log(`  Price error for ${ticker}:`, e.message);
-    }
+    } catch (e) {}
     return null;
   }
 
   async collectTicker(ticker) {
     console.log(`🔄 ${ticker}...`);
     
-    const [reddit, stocktwits, news, priceData] = await Promise.all([
+    const [reddit, bluesky, stocktwits, news, trends, priceData] = await Promise.all([
       this.collectReddit(ticker),
+      this.collectBluesky(ticker),
       this.collectStocktwits(ticker),
       this.collectFinnhubNews(ticker),
+      this.collectGoogleTrends(ticker),
       this.collectPriceData(ticker)
     ]);
     
-    // Combine with weights
+    // Combine with weights - now with Bluesky!
+    // Reddit: 25%, Bluesky: 20%, Stocktwits: 20%, News: 20%, Trends: 15%
     let combinedMentions;
     if (this.redditWorking && reddit.mentions > 0) {
       combinedMentions = Math.round(
-        (reddit.mentions * 0.40) +
-        (stocktwits.mentions * 0.35) +
-        (news.news * 5 * 0.25)
+        (reddit.mentions * 0.25) +
+        (bluesky.mentions * 0.20) +
+        (stocktwits.mentions * 0.20) +
+        (news.news * 5 * 0.20) +
+        (trends.interest * 0.5 * 0.15)
       );
     } else {
+      // Reddit not working - redistribute
       combinedMentions = Math.round(
-        (stocktwits.mentions * 0.60) +
-        (news.news * 6 * 0.40)
+        (bluesky.mentions * 0.30) +
+        (stocktwits.mentions * 0.25) +
+        (news.news * 6 * 0.25) +
+        (trends.interest * 0.6 * 0.20)
       );
     }
     
@@ -239,11 +370,14 @@ class BackgroundCollector {
       mentions: combinedMentions,
       reddit_mentions: reddit.mentions,
       reddit_posts: reddit.posts,
+      bluesky_mentions: bluesky.mentions,
+      bluesky_posts: bluesky.posts,
       stocktwits_mentions: stocktwits.mentions,
       stocktwits_bullish: stocktwits.bullish,
       stocktwits_bearish: stocktwits.bearish,
       news_count: news.news,
       news_today: news.total || 0,
+      trends_interest: trends.interest,
       sentiment_score: sentiment,
       currentPrice: priceData?.price || 0,
       previousClose: priceData?.previousClose || 0,
@@ -256,7 +390,7 @@ class BackgroundCollector {
     const vol = priceData?.volume || 0;
     const volStr = vol > 0 ? (vol / 1000000).toFixed(1) + 'M' : '0';
     
-    console.log(`  ✅ ${ticker}: ${combinedMentions} mentions (R:${reddit.mentions} ST:${stocktwits.mentions} N:${news.news}) Vol:${volStr} Price:$${priceData?.price || 0}`);
+    console.log(`  ✅ ${ticker}: ${combinedMentions} total (R:${reddit.mentions} B:${bluesky.mentions} ST:${stocktwits.mentions} N:${news.news} GT:${trends.interest}) Vol:${volStr}`);
     
     return tickerData;
   }
@@ -267,7 +401,6 @@ class BackgroundCollector {
     
     const history = this.priceSnapshots.get(ticker);
     
-    // If we don't have enough history yet, use 24h change
     if (!history || history.length < 2) {
       if (data.currentPrice && data.previousClose && data.currentPrice > 0 && data.previousClose > 0) {
         const change = data.currentPrice - data.previousClose;
@@ -277,7 +410,6 @@ class BackgroundCollector {
       return { change: null, changePercent: null };
     }
     
-    // Find closest snapshot to windowMinutes ago
     const targetTime = Date.now() - (windowMinutes * 60 * 1000);
     const sorted = [...history].sort((a, b) => 
       Math.abs(a.timestamp - targetTime) - Math.abs(b.timestamp - targetTime)
@@ -296,14 +428,13 @@ class BackgroundCollector {
   }
 
   startCollection() {
-    console.log(`\n🚀 Background collector starting...`);
+    console.log(`\n🚀 HypeMeter v3.5 - Now with Bluesky!`);
     console.log(`📊 Tracking ${this.trackedTickers.size} tickers`);
-    console.log(`⚡ Initial collection starting NOW\n`);
+    console.log(`📡 Sources: Reddit + Bluesky + Stocktwits + News + Google Trends`);
+    console.log(`⚡ Starting collection...\n`);
     
-    // Start immediately
     this.collectAll();
     
-    // Then every 5 minutes
     setInterval(() => {
       this.collectAll();
     }, 5 * 60 * 1000);
@@ -311,21 +442,20 @@ class BackgroundCollector {
 
   async collectAll() {
     const time = new Date().toLocaleTimeString();
-    console.log(`\n⏰ ${time} - Collecting data...\n`);
+    console.log(`\n⏰ ${time} - Collecting...\n`);
     
     for (const ticker of this.trackedTickers) {
       await this.collectTicker(ticker);
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 1000));
     }
     
-    const redditStatus = this.redditWorking ? '✅' : '⚠️';
-    console.log(`\n${redditStatus} Collection complete. Reddit: ${this.redditWorking ? 'Working' : 'Unavailable'}\n`);
+    console.log(`\n✅ Complete. Reddit: ${this.redditWorking ? '✓' : '✗'} | Bluesky: ${this.blueskyWorking ? '✓' : '✗'}\n`);
   }
 
   addTicker(ticker) {
     if (!this.trackedTickers.has(ticker)) {
       this.trackedTickers.add(ticker);
-      console.log(`➕ ${ticker} added to tracking`);
+      console.log(`➕ ${ticker} added`);
       this.collectTicker(ticker);
     }
   }
@@ -336,10 +466,16 @@ class BackgroundCollector {
 
   getStats() {
     return {
-      version: '3.3.0',
+      version: '3.5.0',
       tracked: this.trackedTickers.size,
       cached: this.liveData.size,
-      reddit: this.redditWorking ? 'working' : 'unavailable'
+      sources: {
+        reddit: this.redditWorking ? 'working' : 'unavailable',
+        bluesky: this.blueskyWorking ? 'working' : 'unavailable',
+        stocktwits: 'working',
+        finnhub: 'working',
+        google_trends: 'working'
+      }
     };
   }
 }
@@ -406,8 +542,10 @@ app.get('/api/hype', async (req, res) => {
         hypeScore: Math.round(hype),
         mentions: data.mentions,
         reddit_mentions: data.reddit_mentions,
+        bluesky_mentions: data.bluesky_mentions,
         stocktwits_mentions: data.stocktwits_mentions,
         news_count: data.news_count,
+        trends_interest: data.trends_interest,
         sentiment: data.sentiment_score > 0.6 ? 'Bullish' : data.sentiment_score < 0.4 ? 'Bearish' : 'Neutral',
         price: data.currentPrice || null,
         change: priceChange.change,
@@ -455,7 +593,7 @@ app.get('/api/quotes', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    message: 'HypeMeter v3.3 - Improved Reddit + Fast Start',
+    message: 'HypeMeter v3.5 - Multi-Source Social Sentiment',
     ...collector.getStats()
   });
 });
@@ -474,10 +612,14 @@ if (process.env.NODE_ENV === 'production') {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`\n🚀 HypeMeter v3.3.0 - Port ${PORT}`);
-  console.log(`📡 Reddit: ${process.env.REDDIT_CLIENT_ID ? 'Enabled' : 'Disabled'}`);
-  console.log(`📡 Finnhub: ${process.env.FINNHUB_API_KEY ? 'Enabled' : 'Disabled'}\n`);
+  console.log(`\n🚀 HypeMeter v3.5.0`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`📊 Data Sources:`);
+  console.log(`   - Reddit (discussions)`);
+  console.log(`   - Bluesky (social posts) 🆕`);
+  console.log(`   - Stocktwits (sentiment)`);
+  console.log(`   - Finnhub (news + prices)`);
+  console.log(`   - Google Trends (search interest)\n`);
   
-  // Start immediately (no delay)
   collector.startCollection();
 });
