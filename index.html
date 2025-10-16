@@ -48,6 +48,16 @@
             font-size: 1.1em;
         }
 
+        .version-badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            margin-top: 10px;
+        }
+
         .controls {
             display: flex;
             gap: 15px;
@@ -222,6 +232,27 @@
             margin-top: 4px;
         }
 
+        .mention-breakdown {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e2e8f0;
+            font-size: 0.85em;
+            color: #718096;
+        }
+
+        .mention-source {
+            text-align: center;
+        }
+
+        .mention-source-value {
+            font-weight: bold;
+            color: #4a5568;
+            display: block;
+            margin-bottom: 3px;
+        }
+
         .last-updated {
             text-align: center;
             color: #718096;
@@ -303,7 +334,8 @@
     <div class="container">
         <div class="header">
             <h1>📈 HypeMeter</h1>
-            <p>Real-time stock hype tracking • Quantifying market attention</p>
+            <p>Real-time stock hype tracking • Dynamic baseline scoring</p>
+            <span class="version-badge">v5.0 - Dynamic Weights</span>
         </div>
 
         <div class="api-status" id="apiStatus">
@@ -330,7 +362,7 @@
         </div>
 
         <div class="refresh-info">
-            💡 Data refreshes automatically every 5 minutes when auto-refresh is enabled
+            💡 v5.0: All weights are now dynamic and relative to baselines • Data persists 30 days
         </div>
 
         <div id="status" class="status" style="display: none;"></div>
@@ -352,7 +384,8 @@
                 const data = await response.json();
                 
                 if (data.status === 'ok') {
-                    document.getElementById('apiStatus').innerHTML = '✅ Backend connected: v' + data.version;
+                    document.getElementById('apiStatus').innerHTML = 
+                        `✅ Backend connected: v${data.version} • ${data.tracked_tickers} tickers • ${data.data_points} data points`;
                     document.getElementById('apiStatus').style.background = '#c6f6d5';
                     document.getElementById('apiStatus').style.color = '#276749';
                 } else {
@@ -427,8 +460,10 @@
             const changeClass = getChangeClass(data.change || 0);
             const hypeColor = data.hypeScore >= 70 ? '#e53e3e' : data.hypeScore >= 40 ? '#d69e2e' : '#38a169';
             
-            // Use the COMBINED weighted mentions, not just stocktwits
-            const displayMentions = data.mentions || 0;
+            // FIXED: Display the COMBINED mentions count (not just stocktwits)
+            const totalMentions = data.mentions || 0;
+            const redditMentions = data.reddit_mentions || 0;
+            const stocktwitsMentions = data.stocktwits_mentions || 0;
             
             return `
                 <div class="stock-card">
@@ -449,12 +484,23 @@
                     
                     <div class="stock-metrics">
                         <div class="metric">
-                            <span class="metric-value">${formatNumber(displayMentions)}</span>
-                            <div class="metric-label">Mentions</div>
+                            <span class="metric-value">${formatNumber(totalMentions)}</span>
+                            <div class="metric-label">Total Mentions</div>
                         </div>
                         <div class="metric">
                             <span class="metric-value">${formatNumber(data.volume || 0)}</span>
                             <div class="metric-label">Volume</div>
+                        </div>
+                    </div>
+                    
+                    <div class="mention-breakdown">
+                        <div class="mention-source">
+                            <span class="mention-source-value">${formatNumber(redditMentions)}</span>
+                            <div>Reddit</div>
+                        </div>
+                        <div class="mention-source">
+                            <span class="mention-source-value">${formatNumber(stocktwitsMentions)}</span>
+                            <div>StockTwits</div>
                         </div>
                     </div>
                 </div>
@@ -471,7 +517,7 @@
             }
 
             setButtonLoading(true);
-            showStatus('Fetching real-time hype data...', 'loading');
+            showStatus('Fetching real-time hype data with dynamic weights...', 'loading');
 
             try {
                 console.log('Fetching from:', `${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`);
@@ -499,7 +545,7 @@
                 stockGrid.innerHTML = sortedData.map(stock => createStockCard(stock)).join('');
                 
                 const lastUpdated = document.getElementById('lastUpdated');
-                lastUpdated.textContent = `Last updated: ${new Date().toLocaleString()}`;
+                lastUpdated.textContent = `Last updated: ${new Date().toLocaleString()} • Time window: ${timeWindow} minutes`;
                 
                 hideStatus();
                 
@@ -535,7 +581,7 @@
         });
 
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('HypeMeter frontend loaded');
+            console.log('HypeMeter v5.0 frontend loaded - Dynamic Weights');
             console.log('API Base URL:', API_BASE_URL);
             
             testBackendConnection();
