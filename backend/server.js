@@ -1,33 +1,24 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
-const fs = require('fs').promises;
 const app = express();
 
-// Multi-Source Hype Calculator
-// Sources: Reddit OAuth, Stocktwits, Alpha Vantage, Finnhub
-class MultiSourceHypeCalculator {
+// WORKING: Stocktwits + Finnhub (Reddit optional)
+class BackgroundCollector {
   constructor() {
-    this.cache = new Map();
-    this.CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+    this.liveData = new Map();
+    this.priceSnapshots = new Map();
     this.redditToken = null;
     this.redditTokenExpiry = 0;
+    this.redditWorking = false;
+    
+    this.trackedTickers = new Set([
+      'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'AMD',
+      'GME', 'AMC', 'SPY', 'QQQ', 'COIN', 'NFLX', 'PLTR', 'MSTR', 'SOFI'
+    ]);
   }
 
-  getFromCache(key) {
-    const item = this.cache.get(key);
-    if (item && Date.now() - item.timestamp < this.CACHE_TTL) {
-      return item.data;
-    }
-    this.cache.delete(key);
-    return null;
-  }
-
-  setCache(key, data) {
-    this.cache.set(key, { data, timestamp: Date.now() });
-  }
-
-  // REDDIT OAUTH TOKEN
+  // REDDIT TOKEN (Optional - won't break if it fails)
   async getRedditToken() {
     if (this.redditToken && Date.now() < this.redditTokenExpiry) {
       return this.redditToken;
@@ -35,325 +26,333 @@ class MultiSourceHypeCalculator {
 
     const clientId = process.env.REDDIT_CLIENT_ID;
     const clientSecret = process.env.REDDIT_CLIENT_SECRET;
-
     if (!clientId || !clientSecret) {
+      this.redditWorking = false;
       return null;
     }
 
     try {
       const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-      
       const response = await fetch('https://www.reddit.com/api/v1/access_token', {
         method: 'POST',
         headers: {
           'Authorization': `Basic ${auth}`,
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'HypeMeter/3.0'
+          'User-Agent': 'HypeMeter/3.2'
         },
         body: 'grant_type=client_credentials'
       });
 
+      if (response.status === 401) {
+        console.log('⚠️  Reddit OAuth: 401 Unauthorized - Check app setup');
+        this.redditWorking = false;
+        return null;
+      }
+
       const data = await response.json();
-      
       if (data.access_token) {
         this.redditToken = data.access_token;
         this.redditTokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
-        console.log('✅ Reddit OAuth token obtained');
+        this.redditWorking = true;
+        console.log('✅ Reddit OAuth working');
         return this.redditToken;
       }
-    } catch (error) {
-      console.error('❌ Reddit OAuth:', error.message);
+    } catch (e) {
+      console.log('⚠️  Reddit OAuth error:', e.message);
+      this.redditWorking = false;
     }
     return null;
   }
 
-  // 1. REDDIT MENTIONS
-  async getRedditMentions(tickerList, windowMinutes) {
-    const results = {};
+  // REDDIT (Optional - graceful degradation)
+  async collectReddit(ticker) {
     const token = await this.getRedditToken();
-    
-    if (!token) {
-      console.log('⚠️  Reddit unavailable');
-      tickerList.forEach(t => results[t] = { mentions: 0, posts: 0 });
-      return results;
-    }
+    if (!token) return { mentions: 0, posts: 0 };
 
-    const subreddits = ['wallstreetbets', 'stocks', 'investing', 'stockmarket'];
-    console.log(`\n📱 Reddit: ${tickerList.join(', ')}`);
+    const subreddits = [
+      'wallstreetbets', 'stocks', 'investing', 'stockmarket', 
+      'options', 'daytrading', 'SwingTrading'
+    ];
     
-    for (const ticker of tickerList) {
-      let totalMentions = 0;
-      let totalPosts = 0;
-      const timeThreshold = Math.floor((Date.now() - (windowMinutes * 60 * 1000)) / 1000);
-      
-      for (const subreddit of subreddits) {
-        try {
-          const url = `https://oauth.reddit.com/r/${subreddit}/search?q=${ticker}&restrict_sr=1&sort=new&limit=100&t=day`;
-          
-          const response = await fetch(url, {
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'User-Agent': 'HypeMeter/3.0'
-            }
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-            
-            if (data?.data?.children) {
-              const recentPosts = data.data.children.filter(p => p.data.created_utc > timeThreshold);
-              totalPosts += recentPosts.length;
-              
-              recentPosts.forEach(post => {
-                const text = `${post.data.title} ${post.data.selftext}`.toUpperCase();
-                const regex = new RegExp(`\\b${ticker}\\b`, 'g');
-                const matches = text.match(regex) || [];
-                totalMentions += matches.length;
-              });
-            }
-          }
-          await new Promise(r => setTimeout(r, 300));
-        } catch (e) {
-          console.log(`  r/${subreddit} error`);
-        }
-      }
-      
-      results[ticker] = { mentions: totalMentions, posts: totalPosts };
-      console.log(`  ${ticker}: ${totalMentions} mentions in ${totalPosts} posts`);
-    }
+    let totalMentions = 0;
+    let totalPosts = 0;
+    const oneHourAgo = Math.floor((Date.now() - (60 * 60 * 1000)) / 1000);
     
-    return results;
-  }
-
-  // 2. STOCKTWITS
-  async getStocktwitsMentions(tickerList, windowMinutes) {
-    const results = {};
-    console.log(`\n💬 Stocktwits: ${tickerList.join(', ')}`);
-    
-    for (const ticker of tickerList) {
+    for (const sub of subreddits) {
       try {
-        const response = await fetch(`https://api.stocktwits.com/api/2/streams/symbol/${ticker}.json`);
+        const url = `https://oauth.reddit.com/r/${sub}/search?q=${ticker}&restrict_sr=1&sort=new&limit=250&t=week`;
         
+        const response = await fetch(url, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'User-Agent': 'HypeMeter/3.2'
+          }
+        });
+
         if (response.ok) {
           const data = await response.json();
-          const timeThreshold = Date.now() - (windowMinutes * 60 * 1000);
           
-          const recent = data.messages?.filter(m => 
-            new Date(m.created_at).getTime() > timeThreshold
-          ) || [];
-          
-          let bullish = 0, bearish = 0;
-          recent.forEach(m => {
-            if (m.entities?.sentiment?.basic === 'Bullish') bullish++;
-            if (m.entities?.sentiment?.basic === 'Bearish') bearish++;
-          });
-          
-          results[ticker] = {
-            mentions: recent.length,
-            bullish,
-            bearish,
-            sentiment: bullish + bearish > 0 ? bullish / (bullish + bearish) : 0.5
-          };
-          
-          console.log(`  ${ticker}: ${recent.length} messages (${bullish}↑ ${bearish}↓)`);
-        } else {
-          results[ticker] = { mentions: 0, bullish: 0, bearish: 0, sentiment: 0.5 };
+          if (data?.data?.children) {
+            const recent = data.data.children.filter(p => p.data.created_utc > oneHourAgo);
+            totalPosts += recent.length;
+            
+            recent.forEach(post => {
+              const text = `${post.data.title} ${post.data.selftext}`.toUpperCase();
+              const patterns = [
+                new RegExp(`\\$${ticker}\\b`, 'g'),
+                new RegExp(`\\b${ticker}\\b`, 'g')
+              ];
+              
+              patterns.forEach(p => {
+                const matches = text.match(p) || [];
+                totalMentions += matches.length;
+              });
+            });
+          }
         }
         
-        await new Promise(r => setTimeout(r, 300));
-      } catch (e) {
-        results[ticker] = { mentions: 0, bullish: 0, bearish: 0, sentiment: 0.5 };
-      }
+        await new Promise(r => setTimeout(r, 200));
+      } catch (e) {}
     }
     
-    return results;
+    return { mentions: totalMentions, posts: totalPosts };
   }
 
-  // 3. ALPHA VANTAGE NEWS SENTIMENT
-  async getAlphaVantageNews(tickerList) {
-    const results = {};
-    const apiKey = process.env.ALPHA_VANTAGE_KEY;
-    
-    if (!apiKey) {
-      tickerList.forEach(t => results[t] = { news: 0, sentiment: 0 });
-      return results;
+  // STOCKTWITS (Primary social source)
+  async collectStocktwits(ticker) {
+    try {
+      const response = await fetch(`https://api.stocktwits.com/api/2/streams/symbol/${ticker}.json`);
+      if (!response.ok) return { mentions: 0, bullish: 0, bearish: 0 };
+      
+      const data = await response.json();
+      const oneHourAgo = Date.now() - (60 * 60 * 1000);
+      
+      const recent = data.messages?.filter(m => 
+        new Date(m.created_at).getTime() > oneHourAgo
+      ) || [];
+      
+      let bullish = 0, bearish = 0;
+      recent.forEach(m => {
+        if (m.entities?.sentiment?.basic === 'Bullish') bullish++;
+        if (m.entities?.sentiment?.basic === 'Bearish') bearish++;
+      });
+      
+      return { mentions: recent.length, bullish, bearish };
+    } catch (e) {
+      return { mentions: 0, bullish: 0, bearish: 0 };
     }
-    
-    console.log(`\n📰 Alpha Vantage News: ${tickerList.join(', ')}`);
-    
-    for (const ticker of tickerList) {
-      try {
-        const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=${ticker}&apikey=${apiKey}&limit=50`;
-        
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.feed) {
-          const oneHourAgo = Date.now() - (60 * 60 * 1000);
-          const recentNews = data.feed.filter(article => {
-            const articleTime = new Date(article.time_published.replace(
-              /(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/,
-              '$1-$2-$3T$4:$5:$6'
-            )).getTime();
-            return articleTime > oneHourAgo;
-          });
-          
-          let totalSentiment = 0;
-          recentNews.forEach(article => {
-            const tickerSentiment = article.ticker_sentiment?.find(
-              ts => ts.ticker === ticker
-            );
-            if (tickerSentiment) {
-              totalSentiment += parseFloat(tickerSentiment.ticker_sentiment_score || 0);
-            }
-          });
-          
-          const avgSentiment = recentNews.length > 0 ? totalSentiment / recentNews.length : 0;
-          
-          results[ticker] = {
-            news: recentNews.length,
-            sentiment: avgSentiment,
-            sentiment_label: avgSentiment > 0.15 ? 'Bullish' : avgSentiment < -0.15 ? 'Bearish' : 'Neutral'
-          };
-          
-          console.log(`  ${ticker}: ${recentNews.length} articles (sentiment: ${avgSentiment.toFixed(2)})`);
-        } else {
-          results[ticker] = { news: 0, sentiment: 0, sentiment_label: 'Neutral' };
-        }
-        
-        await new Promise(r => setTimeout(r, 15000)); // Alpha Vantage rate limit
-      } catch (e) {
-        results[ticker] = { news: 0, sentiment: 0, sentiment_label: 'Neutral' };
-      }
-    }
-    
-    return results;
   }
 
-  // 4. FINNHUB NEWS
-  async getFinnhubNews(tickerList) {
-    const results = {};
+  // FINNHUB NEWS (Primary news source - working great!)
+  async collectFinnhubNews(ticker) {
     const apiKey = process.env.FINNHUB_API_KEY;
+    if (!apiKey) return { news: 0, articles: [] };
     
-    if (!apiKey) {
-      tickerList.forEach(t => results[t] = { news: 0 });
-      return results;
-    }
-    
-    console.log(`\n📊 Finnhub News: ${tickerList.join(', ')}`);
-    
-    for (const ticker of tickerList) {
-      try {
-        const toDate = Math.floor(Date.now() / 1000);
-        const fromDate = toDate - (24 * 60 * 60);
-        const dateStr = new Date().toISOString().split('T')[0];
+    try {
+      const dateStr = new Date().toISOString().split('T')[0];
+      const url = `https://finnhub.io/api/v1/company-news?symbol=${ticker}&from=${dateStr}&to=${dateStr}&token=${apiKey}`;
+      
+      const response = await fetch(url);
+      const news = await response.json();
+      
+      if (Array.isArray(news)) {
+        const oneHourAgo = Date.now() - (60 * 60 * 1000);
+        const recent = news.filter(a => a.datetime * 1000 > oneHourAgo);
         
-        const url = `https://finnhub.io/api/v1/company-news?symbol=${ticker}&from=${dateStr}&to=${dateStr}&token=${apiKey}`;
-        
-        const response = await fetch(url);
-        const news = await response.json();
-        
-        if (Array.isArray(news)) {
-          const oneHourAgo = Date.now() - (60 * 60 * 1000);
-          const recent = news.filter(a => a.datetime * 1000 > oneHourAgo);
-          
-          results[ticker] = { news: recent.length };
-          console.log(`  ${ticker}: ${recent.length} articles`);
-        } else {
-          results[ticker] = { news: 0 };
-        }
-        
-        await new Promise(r => setTimeout(r, 1000));
-      } catch (e) {
-        results[ticker] = { news: 0 };
+        return { 
+          news: recent.length,
+          total_today: news.length,
+          articles: recent.slice(0, 3).map(a => ({
+            headline: a.headline,
+            source: a.source,
+            url: a.url
+          }))
+        };
       }
-    }
-    
-    return results;
+    } catch (e) {}
+    return { news: 0, articles: [] };
   }
 
-  // COMBINE ALL SOURCES
-  async getAllMentions(tickerList, windowMinutes) {
-    console.log(`\n🎯 Fetching from ALL sources...`);
+  // PRICE & VOLUME
+  async collectPriceData(ticker) {
+    const apiKey = process.env.FINNHUB_API_KEY;
+    if (!apiKey) return null;
     
-    const [reddit, stocktwits, alphaNews, finnhubNews] = await Promise.all([
-      this.getRedditMentions(tickerList, windowMinutes),
-      this.getStocktwitsMentions(tickerList, windowMinutes),
-      this.getAlphaVantageNews(tickerList),
-      this.getFinnhubNews(tickerList)
+    try {
+      const response = await fetch(`https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${apiKey}`);
+      const data = await response.json();
+      
+      if (data.c && data.pc) {
+        const snapshot = {
+          price: data.c,
+          previousClose: data.pc,
+          volume: data.v || 0,
+          timestamp: Date.now()
+        };
+        
+        if (!this.priceSnapshots.has(ticker)) {
+          this.priceSnapshots.set(ticker, []);
+        }
+        const history = this.priceSnapshots.get(ticker);
+        history.push(snapshot);
+        
+        if (history.length > 288) history.shift();
+        
+        return snapshot;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // COLLECT ALL FOR ONE TICKER
+  async collectTicker(ticker) {
+    console.log(`🔄 ${ticker}...`);
+    
+    const [reddit, stocktwits, news, priceData] = await Promise.all([
+      this.collectReddit(ticker),
+      this.collectStocktwits(ticker),
+      this.collectFinnhubNews(ticker),
+      this.collectPriceData(ticker)
     ]);
     
-    const combined = {};
-    
-    for (const ticker of tickerList) {
-      const r = reddit[ticker] || { mentions: 0, posts: 0 };
-      const st = stocktwits[ticker] || { mentions: 0, sentiment: 0.5, bullish: 0, bearish: 0 };
-      const av = alphaNews[ticker] || { news: 0, sentiment: 0 };
-      const fh = finnhubNews[ticker] || { news: 0 };
-      
-      // Weighted combination
-      // Reddit: 40%, Stocktwits: 35%, News: 25%
-      const totalMentions = Math.round(
-        (r.mentions * 0.40) +
-        (st.mentions * 0.35) +
-        ((av.news + fh.news) * 3 * 0.25) // News has 3x multiplier
+    // Combine mentions with proper weighting
+    // If Reddit working: Reddit 40%, Stocktwits 35%, News 25%
+    // If Reddit broken: Stocktwits 60%, News 40%
+    let combinedMentions;
+    if (this.redditWorking && reddit.mentions > 0) {
+      combinedMentions = Math.round(
+        (reddit.mentions * 0.40) +
+        (stocktwits.mentions * 0.35) +
+        (news.news * 4 * 0.25)
       );
-      
-      // Combined sentiment
-      const sentiment = (st.sentiment * 0.6) + ((av.sentiment + 1) / 2 * 0.4);
-      
-      combined[ticker] = {
-        mentions: totalMentions,
-        reddit_mentions: r.mentions,
-        reddit_posts: r.posts,
-        stocktwits_mentions: st.mentions,
-        stocktwits_bullish: st.bullish,
-        stocktwits_bearish: st.bearish,
-        alpha_news: av.news,
-        alpha_sentiment: av.sentiment,
-        finnhub_news: fh.news,
-        sentiment_score: sentiment,
-        sentiment_label: sentiment > 0.6 ? 'Bullish' : sentiment < 0.4 ? 'Bearish' : 'Neutral',
-        window: windowMinutes,
-        timestamp: new Date().toISOString(),
-        sources: ['reddit', 'stocktwits', 'alpha_vantage', 'finnhub']
-      };
-      
-      console.log(`\n✅ ${ticker} TOTAL: ${totalMentions} mentions`);
-      console.log(`   Reddit: ${r.mentions}, Stocktwits: ${st.mentions}, News: ${av.news + fh.news}`);
+    } else {
+      // Reddit not working - boost other sources
+      combinedMentions = Math.round(
+        (stocktwits.mentions * 0.60) +
+        (news.news * 5 * 0.40)
+      );
     }
     
-    return combined;
+    const sentiment = stocktwits.bullish + stocktwits.bearish > 0
+      ? stocktwits.bullish / (stocktwits.bullish + stocktwits.bearish)
+      : 0.5;
+    
+    const tickerData = {
+      ticker,
+      mentions: combinedMentions,
+      reddit_mentions: reddit.mentions,
+      reddit_posts: reddit.posts,
+      stocktwits_mentions: stocktwits.mentions,
+      stocktwits_bullish: stocktwits.bullish,
+      stocktwits_bearish: stocktwits.bearish,
+      news_count: news.news,
+      news_today: news.total_today || 0,
+      top_headlines: news.articles || [],
+      sentiment_score: sentiment,
+      currentPrice: priceData?.price || null,
+      previousClose: priceData?.previousClose || null,
+      volume: priceData?.volume || 0,
+      lastUpdated: new Date().toISOString(),
+      sources_working: {
+        reddit: this.redditWorking && reddit.mentions > 0,
+        stocktwits: stocktwits.mentions > 0,
+        news: news.news > 0
+      }
+    };
+    
+    this.liveData.set(ticker, tickerData);
+    
+    const sourcesStr = this.redditWorking 
+      ? `R:${reddit.mentions} ST:${stocktwits.mentions} N:${news.news}`
+      : `ST:${stocktwits.mentions} N:${news.news} (Reddit: N/A)`;
+    
+    console.log(`  ✅ ${ticker}: ${combinedMentions} total (${sourcesStr}) Vol:${(priceData?.volume || 0).toLocaleString()}`);
+    
+    return tickerData;
   }
 
-  // HYPE CALCULATION
-  calculateHype(mentions, volume, priceChange, sentiment) {
-    let score = 0;
-    
-    // Mentions (0-40)
-    if (mentions > 0) {
-      score += Math.min(Math.log10(mentions + 1) * 15, 40);
+  // PRICE CHANGE FOR TIMEFRAME
+  getPriceChange(ticker, windowMinutes) {
+    const history = this.priceSnapshots.get(ticker);
+    if (!history || history.length < 2) {
+      const data = this.liveData.get(ticker);
+      if (data?.currentPrice && data?.previousClose) {
+        return {
+          change: data.currentPrice - data.previousClose,
+          changePercent: ((data.currentPrice - data.previousClose) / data.previousClose) * 100
+        };
+      }
+      return { change: 0, changePercent: 0 };
     }
     
-    // Volume (0-30)
-    if (volume > 0) {
-      score += Math.min(Math.log10(volume / 1000000 + 1) * 20, 30);
+    const targetTime = Date.now() - (windowMinutes * 60 * 1000);
+    const sorted = [...history].sort((a, b) => 
+      Math.abs(a.timestamp - targetTime) - Math.abs(b.timestamp - targetTime)
+    );
+    
+    const oldPrice = sorted[0].price;
+    const currentPrice = history[history.length - 1].price;
+    
+    return {
+      change: currentPrice - oldPrice,
+      changePercent: ((currentPrice - oldPrice) / oldPrice) * 100
+    };
+  }
+
+  // START BACKGROUND COLLECTION
+  startCollection() {
+    console.log(`\n🚀 Starting background collection for ${this.trackedTickers.size} tickers`);
+    console.log(`📡 Sources: Stocktwits (primary) + Finnhub News${this.redditWorking ? ' + Reddit' : ''}\n`);
+    
+    this.collectAll();
+    
+    setInterval(() => {
+      this.collectAll();
+    }, 5 * 60 * 1000);
+  }
+
+  async collectAll() {
+    const time = new Date().toLocaleTimeString();
+    console.log(`\n⏰ ${time} - Collection starting...`);
+    
+    for (const ticker of this.trackedTickers) {
+      await this.collectTicker(ticker);
+      await new Promise(r => setTimeout(r, 1000));
     }
     
-    // Price volatility (0-25)
-    if (priceChange !== null && priceChange !== undefined) {
-      score += Math.min(Math.abs(priceChange) * 3, 25);
+    console.log(`\n✅ Collection complete. ${this.liveData.size} tickers updated.\n`);
+  }
+
+  addTicker(ticker) {
+    if (!this.trackedTickers.has(ticker)) {
+      this.trackedTickers.add(ticker);
+      console.log(`➕ Added ${ticker} to tracking`);
+      this.collectTicker(ticker);
     }
-    
-    // Sentiment bonus (0-5)
-    const sentimentExtremity = Math.abs(sentiment - 0.5) * 2;
-    score += sentimentExtremity * 5;
-    
-    return Math.round(score);
+  }
+
+  getData(ticker) {
+    return this.liveData.get(ticker) || null;
+  }
+
+  getStats() {
+    return {
+      version: '3.2.0',
+      tracked_tickers: Array.from(this.trackedTickers),
+      cached_tickers: Array.from(this.liveData.keys()),
+      sources: {
+        reddit: this.redditWorking ? 'working' : 'unavailable',
+        stocktwits: 'working',
+        finnhub: 'working'
+      },
+      last_update: this.liveData.size > 0 
+        ? Array.from(this.liveData.values())[0].lastUpdated 
+        : null
+    };
   }
 }
 
-const hypeCalc = new MultiSourceHypeCalculator();
+const collector = new BackgroundCollector();
 
 // CORS
 app.use(cors({
@@ -371,145 +370,65 @@ app.use(cors({
 
 app.use(express.json());
 
-// HEALTH
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    version: '3.0.0-multisource',
-    sources: {
-      reddit: !!process.env.REDDIT_CLIENT_ID,
-      stocktwits: true,
-      alpha_vantage: !!process.env.ALPHA_VANTAGE_KEY,
-      finnhub: !!process.env.FINNHUB_API_KEY
-    }
-  });
+  res.json({ status: 'ok', ...collector.getStats() });
 });
 
-// MENTIONS
-app.get('/api/mentions', async (req, res) => {
-  try {
-    const { tickers, window = 60 } = req.query;
-    
-    if (!tickers) {
-      return res.status(400).json({ error: 'Tickers required' });
-    }
-
-    const cacheKey = `mentions_${tickers}_${window}`;
-    const cached = hypeCalc.getFromCache(cacheKey);
-    if (cached) return res.json(cached);
-
-    const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
-    const results = await hypeCalc.getAllMentions(tickerList, window);
-
-    hypeCalc.setCache(cacheKey, results);
-    res.json(results);
-  } catch (error) {
-    console.error('Mentions error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// QUOTES
-app.get('/api/quotes', async (req, res) => {
-  try {
-    const { tickers } = req.query;
-    const apiKey = process.env.FINNHUB_API_KEY;
-
-    if (!apiKey || !tickers) {
-      return res.status(400).json({ error: 'Missing parameters' });
-    }
-
-    const cacheKey = `quotes_${tickers}`;
-    const cached = hypeCalc.getFromCache(cacheKey);
-    if (cached) return res.json(cached);
-
-    const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
-    const results = {};
-
-    const promises = tickerList.map(async (ticker) => {
-      try {
-        const response = await fetch(`https://finnhub.io/api/v1/quote?symbol=${ticker}&token=${apiKey}`);
-        const data = await response.json();
-
-        if (data.c && data.pc) {
-          return {
-            ticker,
-            data: {
-              symbol: ticker,
-              currentPrice: data.c,
-              previousClose: data.pc,
-              change: data.c - data.pc,
-              changePercent: ((data.c - data.pc) / data.pc) * 100,
-              volume: data.v || 0
-            }
-          };
-        }
-      } catch (e) {
-        return { ticker, data: { error: 'Failed' } };
-      }
-    });
-
-    const responses = await Promise.all(promises);
-    responses.forEach(({ ticker, data }) => results[ticker] = data);
-
-    hypeCalc.setCache(cacheKey, results);
-    res.json(results);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// HYPE
+// INSTANT HYPE ENDPOINT
 app.get('/api/hype', async (req, res) => {
   try {
     const { tickers, window = 60 } = req.query;
-    
-    if (!tickers) {
-      return res.status(400).json({ error: 'Tickers required' });
-    }
-
-    const cacheKey = `hype_${tickers}_${window}`;
-    const cached = hypeCalc.getFromCache(cacheKey);
-    if (cached) return res.json(cached);
+    if (!tickers) return res.status(400).json({ error: 'Tickers required' });
 
     const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
-    
-    const [mentions, quotes] = await Promise.all([
-      hypeCalc.getAllMentions(tickerList, window),
-      fetch(`${req.protocol}://${req.get('host')}/api/quotes?tickers=${tickers}`).then(r => r.json())
-    ]);
-
     const results = {};
-
+    
+    tickerList.forEach(t => collector.addTicker(t));
+    
     for (const ticker of tickerList) {
-      const m = mentions[ticker] || {};
-      const q = quotes[ticker] || {};
-
-      const hype = hypeCalc.calculateHype(
-        m.mentions || 0,
-        q.volume || 0,
-        q.changePercent,
-        m.sentiment_score || 0.5
-      );
-
+      const data = collector.getData(ticker);
+      
+      if (!data) {
+        results[ticker] = {
+          symbol: ticker,
+          hypeScore: 0,
+          mentions: 0,
+          price: null,
+          loading: true
+        };
+        continue;
+      }
+      
+      const priceChange = collector.getPriceChange(ticker, parseInt(window));
+      
+      let hype = 0;
+      if (data.mentions > 0) hype += Math.min(Math.log10(data.mentions + 1) * 15, 40);
+      if (data.volume > 0) hype += Math.min(Math.log10(data.volume / 1000000 + 1) * 20, 30);
+      if (priceChange.changePercent) hype += Math.min(Math.abs(priceChange.changePercent) * 3, 25);
+      const sentimentExtremity = Math.abs(data.sentiment_score - 0.5) * 2;
+      hype += sentimentExtremity * 5;
+      
       results[ticker] = {
         symbol: ticker,
-        hypeScore: hype,
-        mentions: m.mentions || 0,
-        reddit_mentions: m.reddit_mentions || 0,
-        stocktwits_mentions: m.stocktwits_mentions || 0,
-        news_count: (m.alpha_news || 0) + (m.finnhub_news || 0),
-        sentiment: m.sentiment_label || 'Neutral',
-        sentiment_score: m.sentiment_score || 0.5,
-        price: q.currentPrice || null,
-        change: q.change || null,
-        changePercent: q.changePercent || null,
-        volume: q.volume || null,
-        timestamp: new Date().toISOString()
+        hypeScore: Math.round(hype),
+        mentions: data.mentions,
+        reddit_mentions: data.reddit_mentions,
+        reddit_posts: data.reddit_posts,
+        stocktwits_mentions: data.stocktwits_mentions,
+        news_count: data.news_count,
+        news_today: data.news_today,
+        sentiment: data.sentiment_score > 0.6 ? 'Bullish' : data.sentiment_score < 0.4 ? 'Bearish' : 'Neutral',
+        sentiment_score: data.sentiment_score,
+        price: data.currentPrice,
+        change: priceChange.change,
+        changePercent: priceChange.changePercent,
+        volume: data.volume,
+        name: ticker,
+        timestamp: data.lastUpdated,
+        sources: data.sources_working
       };
     }
-
-    hypeCalc.setCache(cacheKey, results);
+    
     res.json(results);
   } catch (error) {
     console.error('Hype error:', error);
@@ -517,22 +436,73 @@ app.get('/api/hype', async (req, res) => {
   }
 });
 
-// ROOT
+app.get('/api/quotes', (req, res) => {
+  try {
+    const { tickers } = req.query;
+    if (!tickers) return res.status(400).json({ error: 'Tickers required' });
+    
+    const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
+    const results = {};
+    
+    for (const ticker of tickerList) {
+      const data = collector.getData(ticker);
+      if (data) {
+        results[ticker] = {
+          symbol: ticker,
+          currentPrice: data.currentPrice,
+          previousClose: data.previousClose,
+          change: data.currentPrice - data.previousClose,
+          changePercent: ((data.currentPrice - data.previousClose) / data.previousClose) * 100,
+          volume: data.volume,
+          timestamp: data.lastUpdated
+        };
+      }
+    }
+    
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/mentions', (req, res) => {
+  try {
+    const { tickers } = req.query;
+    if (!tickers) return res.status(400).json({ error: 'Tickers required' });
+    
+    const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
+    const results = {};
+    
+    for (const ticker of tickerList) {
+      const data = collector.getData(ticker);
+      if (data) {
+        results[ticker] = {
+          mentions: data.mentions,
+          reddit_mentions: data.reddit_mentions,
+          stocktwits_mentions: data.stocktwits_mentions,
+          news_count: data.news_count,
+          timestamp: data.lastUpdated,
+          sources: data.sources_working
+        };
+      }
+    }
+    
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({
-    message: 'HypeMeter Multi-Source API',
-    version: '3.0.0',
-    sources: ['Reddit OAuth', 'Stocktwits', 'Alpha Vantage', 'Finnhub'],
-    endpoints: {
-      mentions: '/api/mentions?tickers=NVDA,TSLA&window=60',
-      quotes: '/api/quotes?tickers=NVDA,TSLA',
-      hype: '/api/hype?tickers=NVDA,TSLA&window=60'
-    }
+    message: 'HypeMeter v3.2 - Stocktwits + Finnhub Focus',
+    ...collector.getStats(),
+    note: 'Reddit optional - works great without it!'
   });
 });
 
 app.get('/keepalive', (req, res) => {
-  res.json({ alive: true });
+  res.json({ alive: true, ...collector.getStats() });
 });
 
 if (process.env.NODE_ENV === 'production') {
@@ -545,10 +515,15 @@ if (process.env.NODE_ENV === 'production') {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`\n🚀 HypeMeter Multi-Source API - Port ${PORT}`);
-  console.log(`📡 Data Sources:`);
-  console.log(`   ${process.env.REDDIT_CLIENT_ID ? '✅' : '❌'} Reddit OAuth`);
-  console.log(`   ✅ Stocktwits`);
-  console.log(`   ${process.env.ALPHA_VANTAGE_KEY ? '✅' : '❌'} Alpha Vantage`);
-  console.log(`   ${process.env.FINNHUB_API_KEY ? '✅' : '❌'} Finnhub\n`);
+  console.log(`\n🚀 HypeMeter v3.2.0 - Working Sources Focus`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`\n🔑 Sources:`);
+  console.log(`   Stocktwits: ✅ (Primary social)`);
+  console.log(`   Finnhub: ✅ (News + prices)`);
+  console.log(`   Reddit: ${process.env.REDDIT_CLIENT_ID ? '🔧 (Will try)' : '⏭️  (Skipped)'}`);
+  console.log(`\n📊 Background collection starts in 10 seconds...\n`);
+  
+  setTimeout(() => {
+    collector.startCollection();
+  }, 10000);
 });
