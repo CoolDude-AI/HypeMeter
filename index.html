@@ -341,7 +341,6 @@
     </div>
 
     <script>
-        // Your working Render backend URL
         const API_BASE_URL = 'https://hypemeter.onrender.com';
         
         let autoRefreshInterval = null;
@@ -353,7 +352,7 @@
                 const data = await response.json();
                 
                 if (data.status === 'ok') {
-                    document.getElementById('apiStatus').innerHTML = '✅ Backend connected: ' + API_BASE_URL;
+                    document.getElementById('apiStatus').innerHTML = '✅ Backend connected: v' + data.version;
                     document.getElementById('apiStatus').style.background = '#c6f6d5';
                     document.getElementById('apiStatus').style.color = '#276749';
                 } else {
@@ -403,7 +402,7 @@
         }
 
         function formatPrice(price) {
-            if (!price) return 'N/A';
+            if (!price || price === 0) return 'N/A';
             return new Intl.NumberFormat('en-US', {
                 style: 'currency',
                 currency: 'USD',
@@ -428,6 +427,9 @@
             const changeClass = getChangeClass(data.change || 0);
             const hypeColor = data.hypeScore >= 70 ? '#e53e3e' : data.hypeScore >= 40 ? '#d69e2e' : '#38a169';
             
+            // Use the COMBINED weighted mentions, not just stocktwits
+            const displayMentions = data.mentions || 0;
+            
             return `
                 <div class="stock-card">
                     <div class="stock-header">
@@ -437,7 +439,7 @@
                     
                     <div class="stock-price">${formatPrice(data.price)}</div>
                     <div class="price-change ${changeClass}">
-                        ${data.change ? formatPrice(data.change) : 'N/A'} 
+                        ${data.change !== null ? formatPrice(data.change) : 'N/A'} 
                         (${formatPercent(data.changePercent)})
                     </div>
                     
@@ -447,7 +449,7 @@
                     
                     <div class="stock-metrics">
                         <div class="metric">
-                            <span class="metric-value">${formatNumber(data.rawMentions || 0)}</span>
+                            <span class="metric-value">${formatNumber(displayMentions)}</span>
                             <div class="metric-label">Mentions</div>
                         </div>
                         <div class="metric">
