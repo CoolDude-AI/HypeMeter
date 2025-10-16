@@ -68,7 +68,9 @@ HypeMeter is a real-time stock hype tracking application that monitors social me
 4. **Bluesky** (optional auth): Alternative social platform
 
 ### Rate Limiting
-- Wait at least 200-700ms between API calls to the same service
+- Wait between API calls to avoid rate limiting:
+  - Reddit API: 200ms between subreddit requests, 300ms for comment fetches
+  - Other APIs: 400-700ms between ticker collections
 - Use exponential backoff for retries
 - Don't overwhelm free-tier API limits
 
@@ -186,9 +188,9 @@ Returns hype scores for requested tickers
 ### Backend Dependencies
 - `express`: Web framework
 - `cors`: CORS middleware
-- `node-fetch`: HTTP requests
+- `node-fetch`: HTTP requests (v2.x for CommonJS compatibility)
 - `@atproto/api`: Bluesky integration
-- `google-trends-api`: (installed but not actively used)
+- `google-trends-api`: Reserved for future trend analysis feature (not currently used)
 
 ### Adding New Dependencies
 - Prefer well-maintained packages with active communities
