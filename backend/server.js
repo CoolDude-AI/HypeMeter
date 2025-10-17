@@ -110,7 +110,7 @@ class PersistentStorage {
   }
 }
 
-// AI-Powered Hype Calculator
+// AI-Powered Hype Calculator with Percentile Scoring
 class AIHypeCalculator {
   constructor() {
     this.storage = new PersistentStorage();
@@ -126,7 +126,18 @@ class AIHypeCalculator {
   }
 
   async init() {
-    console.log('\n🤖 Initializing AI-Powered Hype Calculator...\n');
+    console.log('\n🤖 Initializing AI-Powered Hype Calculator v5.4.0...\n');
+    
+    // Test disk write permissions
+    console.log(`📁 Data path: ${this.storage.dataPath}`);
+    try {
+      await fs.writeFile(path.join(this.storage.dataPath, 'test.json'), '{}');
+      await fs.unlink(path.join(this.storage.dataPath, 'test.json'));
+      console.log('✅ Disk write test: SUCCESS\n');
+    } catch (e) {
+      console.error('❌ Disk write test: FAILED', e.message);
+      console.error('⚠️  Data will not persist across deploys!\n');
+    }
     
     const [mentionData, priceData, weightsData, insightsData] = await Promise.all([
       this.storage.loadMentionEvents(),
@@ -191,7 +202,6 @@ class AIHypeCalculator {
     return utcTime >= 14.5 && utcTime < 21;
   }
 
-  // INSTANT: Get mentions within time window from raw events
   getMentionsInWindow(ticker, windowMinutes, source = null) {
     const events = this.mentionEvents.get(ticker);
     if (!events || events.length === 0) return 0;
@@ -206,7 +216,7 @@ class AIHypeCalculator {
     }).length;
   }
 
-  recordPrice(ticker, price, volume) {
+  recordPrice(ticker, price, volume, volumeSource = 'unknown') {
     if (!this.priceHistory.has(ticker)) {
       this.priceHistory.set(ticker, []);
     }
@@ -215,7 +225,8 @@ class AIHypeCalculator {
     history.push({
       timestamp: Date.now(),
       price,
-      volume
+      volume,
+      volumeSource
     });
 
     const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
@@ -306,6 +317,45 @@ class AIHypeCalculator {
     return Math.min(Math.round(score), 100);
   }
 
+  // NEW: Percentile-based scoring to prevent 100/100 spam
+  calculatePercentileScore(ticker, baseScore, allTickersData) {
+    const allScores = [];
+    
+    for (const [t, data] of allTickersData.entries()) {
+      if (t !== ticker) {
+        const score = this.calculateBaselineHype(t, data);
+        allScores.push(score);
+      }
+    }
+    
+    if (allScores.length === 0) {
+      return Math.min(baseScore, 85);
+    }
+    
+    allScores.sort((a, b) => a - b);
+    
+    const lowerScores = allScores.filter(s => s < baseScore).length;
+    const percentile = (lowerScores / allScores.length) * 100;
+    
+    // Add velocity component (is hype accelerating?)
+    const mentionEvents = this.mentionEvents.get(ticker) || [];
+    const last1h = mentionEvents.filter(e => e.timestamp > Date.now() - 3600000).length;
+    const last2h = mentionEvents.filter(e => e.timestamp > Date.now() - 7200000).length;
+    
+    const velocityBonus = (last1h > (last2h - last1h)) ? 5 : 0;
+    
+    // Scale to 0-85 range, with velocity bonus
+    let finalScore = percentile * 0.85;
+    finalScore += velocityBonus;
+    
+    // Only exceptional cases hit 90+
+    if (percentile > 98 && velocityBonus === 5) {
+      finalScore = Math.min(finalScore + 10, 98);
+    }
+    
+    return Math.round(finalScore);
+  }
+
   async calculateWithClaude(ticker, data) {
     if (!this.claudeAvailable) {
       return null;
@@ -335,6 +385,13 @@ class AIHypeCalculator {
 **Historical Context:**
 Recent mention events: ${historicalData.mentionEvents.length}
 Recent price snapshots: ${historicalData.priceHistory.length}
+
+**Important Context:**
+- News is supplementary, not primary
+- Retail sentiment (Reddit/StockTwits) should drive scores
+- News should validate/amplify retail attention, not replace it
+- If news is high but retail mentions are low, score should be moderate
+- If retail mentions are high and news confirms it, score should be high
 
 **Recent AI Insights:**
 ${JSON.stringify(recentInsights, null, 2)}
@@ -414,7 +471,7 @@ ${JSON.stringify(recentInsights, null, 2)}
     }
   }
 
-  async calculateHype(ticker, data) {
+  async calculateHype(ticker, data, allTickersData) {
     this.analysisCount++;
 
     const shouldUseClaude = this.claudeAvailable && (this.analysisCount % this.useClaudeEvery === 0);
@@ -422,45 +479,48 @@ ${JSON.stringify(recentInsights, null, 2)}
     if (shouldUseClaude) {
       const claudeAnalysis = await this.calculateWithClaude(ticker, data);
       if (claudeAnalysis) {
+        // Apply percentile adjustment to Claude scores
+        const adjustedScore = this.calculatePercentileScore(ticker, claudeAnalysis.hypeScore, allTickersData);
+        
         return {
-          hypeScore: claudeAnalysis.hypeScore,
+          hypeScore: adjustedScore,
+          rawScore: claudeAnalysis.hypeScore,
           confidence: claudeAnalysis.confidence,
-          reasoning: claudeAnalysis.reasoning,
+          reasoning: claudeAnalysis.reasoning + ' (percentile-adjusted)',
           keyFactors: claudeAnalysis.keyFactors,
           weights: claudeAnalysis.weights,
           anomalies: claudeAnalysis.anomalies,
-          mode: 'claude-ai',
+          mode: 'claude-ai-percentile',
           recommendation: claudeAnalysis.recommendation
         };
       }
     }
 
     const learnedWeights = this.aiWeights.get(ticker);
+    let baseScore;
     
     if (learnedWeights) {
-      let score = 0;
-      score += (data.reddit || 0) * learnedWeights.reddit * 50;
-      score += (data.stocktwits || 0) * learnedWeights.stocktwits * 50;
-      score += (data.bluesky || 0) * learnedWeights.bluesky * 50;
-      score += (data.news || 0) * learnedWeights.news * 50;
-      score += Math.log10((data.volume || 0) / 1000000 + 1) * learnedWeights.volume * 30;
-      score += Math.abs(data.priceChangePercent || 0) * learnedWeights.price * 5;
-
-      return {
-        hypeScore: Math.min(Math.round(score), 100),
-        confidence: 75,
-        weights: learnedWeights,
-        mode: 'learned-weights',
-        reasoning: 'Using AI-learned weights from previous analyses'
-      };
+      baseScore = 0;
+      baseScore += (data.reddit || 0) * learnedWeights.reddit * 50;
+      baseScore += (data.stocktwits || 0) * learnedWeights.stocktwits * 50;
+      baseScore += (data.bluesky || 0) * learnedWeights.bluesky * 50;
+      baseScore += (data.news || 0) * learnedWeights.news * 50;
+      baseScore += Math.log10((data.volume || 0) / 1000000 + 1) * learnedWeights.volume * 30;
+      baseScore += Math.abs(data.priceChangePercent || 0) * learnedWeights.price * 5;
+    } else {
+      baseScore = this.calculateBaselineHype(ticker, data);
     }
 
+    // Apply percentile adjustment
+    const adjustedScore = this.calculatePercentileScore(ticker, baseScore, allTickersData);
+
     return {
-      hypeScore: this.calculateBaselineHype(ticker, data),
-      confidence: 50,
-      weights: null,
-      mode: 'baseline',
-      reasoning: 'Using baseline algorithm, AI learning in progress'
+      hypeScore: adjustedScore,
+      rawScore: baseScore,
+      confidence: learnedWeights ? 75 : 50,
+      weights: learnedWeights,
+      mode: learnedWeights ? 'learned-weights-percentile' : 'baseline-percentile',
+      reasoning: 'Percentile-based scoring prevents score inflation'
     };
   }
 }
@@ -480,7 +540,6 @@ class BackgroundCollector {
     this.blueskyAgent = null;
     this.blueskyWorking = false;
     
-    // Rate limiters
     this.redditLimiter = new RateLimiter(50);
     this.finnhubLimiter = new RateLimiter(50);
     
@@ -492,7 +551,7 @@ class BackgroundCollector {
   }
 
   async init() {
-    console.log('🚀 Initializing Background Collector...\n');
+    console.log('🚀 Initializing Background Collector v5.4.0...\n');
     
     const hasData = await this.aiCalc.init();
     await this.initBluesky();
@@ -545,7 +604,7 @@ class BackgroundCollector {
         headers: {
           'Authorization': `Basic ${auth}`,
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'HypeMeter/5.3.0-parallel'
+          'User-Agent': 'HypeMeter/5.4.0'
         },
         body: 'grant_type=client_credentials'
       });
@@ -578,7 +637,7 @@ class BackgroundCollector {
         fetch(url, {
           headers: {
             'Authorization': `Bearer ${token}`,
-            'User-Agent': 'HypeMeter/5.3.0-parallel'
+            'User-Agent': 'HypeMeter/5.4.0'
           }
         })
       );
@@ -629,17 +688,44 @@ class BackgroundCollector {
     }
   }
 
-  // PARALLEL Reddit collection - 4 subreddits at once
+  // CHANGE 1: Expanded to 70 subreddits (from 19)
   async collectReddit(ticker) {
     const token = await this.getRedditToken();
     if (!token) return 0;
 
+    // 70 SUBREDDITS - All fair for every ticker
     const subreddits = [
+      // Tier 1: Core Trading & Investing (20)
       'wallstreetbets', 'stocks', 'investing', 'stockmarket',
       'options', 'Daytrading', 'SwingTrading', 'thetagang',
       'pennystocks', 'RobinHood', 'SecurityAnalysis', 'ValueInvesting',
       'investing_discussion', 'Stock_Picks', 'StockMarketChat',
-      'UnusualOptions', 'Shortsqueeze', 'SPACs', 'algotrading'
+      'UnusualOptions', 'Shortsqueeze', 'SPACs', 'algotrading',
+      'dividends',
+      
+      // Tier 2: Meme & Momentum (15)
+      'Superstonk', 'WallStreetbetsELITE', 'wallstreetbetsOGs',
+      'SqueezePlays', 'amcstock', 'GME', 'BBBY',
+      'TrendingStocks', 'wallstreetbets2', 'MemeStocks',
+      'MillennialBets', 'smallstreetbets', 'WallStreetBetsHUZZAH',
+      'StockSDC', 'wallstreetbets_',
+      
+      // Tier 3: Value & Long-term (15)
+      'Bogleheads', 'financialindependence', 'personalfinance',
+      'Fire', 'leanfire', 'fatFIRE', 'ETFs', 'bonds',
+      'realestateinvesting', 'M1Finance', 'DividendGrowth',
+      'qyldgang', 'Vitards', 'HighDividendYield', 'fiaustralia',
+      
+      // Tier 4: Specialized Sectors (12)
+      'biotechstocks', 'weedstocks', 'thecorporation',
+      'EV', 'electricvehicles', 'CryptoCurrency',
+      'ethtrader', 'CanadianInvestor', 'UKInvesting',
+      'AusFinance', 'EuropeFIRE', 'IndiaInvestments',
+      
+      // Tier 5: Options & Advanced (8)
+      'OptionsOnly', 'vegagang', 'Optionswheel',
+      'pmcc', 'FuturesTrading', 'Forex',
+      'ThetaGang', 'OptionsExclusive'
     ];
     
     let totalMentions = 0;
@@ -656,7 +742,6 @@ class BackgroundCollector {
           let subMentions = 0;
           const postsForComments = [];
           
-          // Check both 'new' and 'hot' in parallel
           const [newPosts, hotPosts] = await Promise.all([
             this.fetchRedditPosts(token, sub, 'new', ticker, oneDayAgo),
             this.fetchRedditPosts(token, sub, 'hot', ticker, oneDayAgo)
@@ -670,11 +755,9 @@ class BackgroundCollector {
         })
       );
       
-      // Aggregate results
       batchResults.forEach(result => {
         totalMentions += result.mentions;
         
-        // Collect comments from top posts (limit 10 total)
         result.postsForComments.slice(0, Math.max(0, 10 - commentsFetched)).forEach(async (post) => {
           if (commentsFetched >= 10) return;
           commentsFetched++;
@@ -686,7 +769,7 @@ class BackgroundCollector {
         });
       });
       
-      await delay(400); // Delay between batches, not between each sub
+      await delay(400);
     }
     
     return totalMentions;
@@ -700,7 +783,7 @@ class BackgroundCollector {
         fetch(url, {
           headers: {
             'Authorization': `Bearer ${token}`,
-            'User-Agent': 'HypeMeter/5.3.0-parallel'
+            'User-Agent': 'HypeMeter/5.4.0'
           }
         })
       );
@@ -763,20 +846,47 @@ class BackgroundCollector {
     }
   }
 
+  // CHANGE 4: Expanded Bluesky from 6 to 20 search patterns + logging
   async collectBluesky(ticker) {
     if (!this.blueskyAgent || !this.blueskyWorking) {
       return 0;
     }
 
     try {
+      // 20 SEARCH PATTERNS (up from 6)
       const searches = [
+        // Core searches
         `$${ticker}`,
         `${ticker} stock`,
         `#${ticker}`,
+        
+        // Trading intent
         `${ticker} trading`,
         `${ticker} buy`,
-        `${ticker} calls`
+        `${ticker} sell`,
+        `${ticker} calls`,
+        `${ticker} puts`,
+        
+        // Sentiment
+        `${ticker} bullish`,
+        `${ticker} bearish`,
+        `${ticker} moon`,
+        `${ticker} crash`,
+        
+        // Action verbs
+        `${ticker} bought`,
+        `${ticker} holding`,
+        `${ticker} watching`,
+        
+        // Discussion
+        `${ticker} DD`,
+        `${ticker} analysis`,
+        `${ticker} thoughts`,
+        `${ticker} price target`,
+        `${ticker} earnings`
       ];
+      
+      console.log(`  🐦 Bluesky: Searching ${searches.length} patterns for ${ticker}...`);
       
       const seenPosts = new Set();
       let totalMentions = 0;
@@ -816,6 +926,7 @@ class BackgroundCollector {
         }
       }
       
+      console.log(`  🐦 Bluesky total for ${ticker}: ${totalMentions} mentions from ${seenPosts.size} unique posts`);
       return totalMentions;
     } catch (e) {
       console.error(`Bluesky error for ${ticker}:`, e.message);
@@ -856,6 +967,7 @@ class BackgroundCollector {
     }
   }
 
+  // CHANGE 4: Added logging to news collection
   async collectNews(ticker) {
     const apiKey = process.env.FINNHUB_API_KEY;
     if (!apiKey) {
@@ -889,6 +1001,8 @@ class BackgroundCollector {
         return 0;
       }
       
+      let effectiveCount = 0;
+      
       if (news.length > 0) {
         news.forEach(article => {
           const articleTime = article.datetime * 1000;
@@ -897,6 +1011,8 @@ class BackgroundCollector {
           let weight = 1;
           if (ageHours < 6) weight = 5;
           else if (ageHours < 24) weight = 3;
+          
+          effectiveCount += weight;
           
           for (let i = 0; i < weight; i++) {
             if (!this.aiCalc.mentionEvents.has(ticker)) {
@@ -910,6 +1026,7 @@ class BackgroundCollector {
         });
       }
       
+      console.log(`  📰 News for ${ticker}: ${news.length} articles found (age-weighted: ${effectiveCount})`);
       return news.length;
       
     } catch (e) {
@@ -917,6 +1034,7 @@ class BackgroundCollector {
     }
   }
 
+  // CHANGE 2: Multi-strategy volume collection (4-tier fallback)
   async collectPriceData(ticker) {
     const apiKey = process.env.FINNHUB_API_KEY;
     if (!apiKey) return null;
@@ -929,25 +1047,94 @@ class BackgroundCollector {
       
       if (!quote.c) return null;
       
-      const to = Math.floor(Date.now() / 1000);
-      const from = to - 3600;
-      
-      const candleRes = await this.finnhubLimiter.execute(() =>
-        fetch(`https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=5&from=${from}&to=${to}&token=${apiKey}`)
-      );
-      const candle = await candleRes.json();
-      
       let volume = 0;
-      if (candle.s === 'ok' && candle.v?.length > 0) {
-        volume = candle.v.reduce((sum, v) => sum + (v || 0), 0);
+      let volumeSource = 'none';
+      
+      // Strategy 1: Try 5-minute candles (last hour)
+      try {
+        const to = Math.floor(Date.now() / 1000);
+        const from = to - 3600;
+        
+        const candleRes = await this.finnhubLimiter.execute(() =>
+          fetch(`https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=5&from=${from}&to=${to}&token=${apiKey}`)
+        );
+        const candle = await candleRes.json();
+        
+        if (candle.s === 'ok' && candle.v?.length > 0) {
+          volume = candle.v.reduce((sum, v) => sum + (v || 0), 0);
+          volumeSource = '5min-candle';
+          console.log(`  ✓ ${ticker} volume from 5min candles: ${volume.toLocaleString()}`);
+        }
+      } catch (e) {
+        console.log(`  ⚠ ${ticker} 5min candles failed: ${e.message}`);
       }
       
-      this.aiCalc.recordPrice(ticker, quote.c, volume);
+      // Strategy 2: Try hourly candles if 5min failed
+      if (volume === 0) {
+        try {
+          const to = Math.floor(Date.now() / 1000);
+          const from = to - 86400;
+          
+          const candleRes = await this.finnhubLimiter.execute(() =>
+            fetch(`https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=60&from=${from}&to=${to}&token=${apiKey}`)
+          );
+          const candle = await candleRes.json();
+          
+          if (candle.s === 'ok' && candle.v?.length > 0) {
+            volume = candle.v.reduce((sum, v) => sum + (v || 0), 0);
+            volumeSource = '60min-candle';
+            console.log(`  ✓ ${ticker} volume from hourly candles: ${volume.toLocaleString()}`);
+          }
+        } catch (e) {
+          console.log(`  ⚠ ${ticker} hourly candles failed: ${e.message}`);
+        }
+      }
+      
+      // Strategy 3: Try daily candle if hourly failed
+      if (volume === 0) {
+        try {
+          const to = Math.floor(Date.now() / 1000);
+          const from = to - 86400;
+          
+          const candleRes = await this.finnhubLimiter.execute(() =>
+            fetch(`https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${apiKey}`)
+          );
+          const candle = await candleRes.json();
+          
+          if (candle.s === 'ok' && candle.v?.length > 0) {
+            volume = candle.v[0] || 0;
+            volumeSource = 'daily-candle';
+            console.log(`  ✓ ${ticker} volume from daily candle: ${volume.toLocaleString()}`);
+          }
+        } catch (e) {
+          console.log(`  ⚠ ${ticker} daily candle failed: ${e.message}`);
+        }
+      }
+      
+      // Strategy 4: Use previous known volume from price history
+      if (volume === 0) {
+        const history = this.aiCalc.priceHistory.get(ticker);
+        if (history && history.length > 0) {
+          const lastKnownVolume = history[history.length - 1].volume;
+          if (lastKnownVolume > 0) {
+            volume = lastKnownVolume;
+            volumeSource = 'previous-known';
+            console.log(`  ↻ ${ticker} using previous known volume: ${volume.toLocaleString()}`);
+          }
+        }
+      }
+      
+      if (volume === 0) {
+        console.log(`  ❌ ${ticker} no volume data available from any source`);
+      }
+      
+      this.aiCalc.recordPrice(ticker, quote.c, volume, volumeSource);
       
       return {
         price: quote.c,
         previousClose: quote.pc || quote.c,
-        volume: volume
+        volume: volume,
+        volumeSource: volumeSource
       };
       
     } catch (e) {
@@ -955,11 +1142,9 @@ class BackgroundCollector {
     }
   }
 
-  // BACKGROUND ONLY - never called from API endpoints
   async collectTicker(ticker) {
     console.log(`🔄 ${ticker}...`);
     
-    // Collect all sources in parallel
     const [reddit, bluesky, stocktwits, news, priceData] = await Promise.all([
       this.collectReddit(ticker),
       this.collectBluesky(ticker),
@@ -969,7 +1154,7 @@ class BackgroundCollector {
     ]);
     
     const marketStatus = this.aiCalc.isMarketOpen() ? '🟢' : '🔴';
-    console.log(`  ${marketStatus} ${ticker}: R:${reddit} ST:${stocktwits} B:${bluesky} N:${news} | Price: ${priceData?.price || 'N/A'}`);
+    console.log(`  ${marketStatus} ${ticker}: R:${reddit} ST:${stocktwits} B:${bluesky} N:${news} | Price: ${priceData?.price || 'N/A'} | Vol: ${priceData?.volume?.toLocaleString() || '0'} (${priceData?.volumeSource || 'none'})`);
     
     return { reddit, stocktwits, bluesky, news, priceData };
   }
@@ -980,15 +1165,12 @@ class BackgroundCollector {
     console.log(`⚡ Using PARALLEL collection (4 subs + 3 tickers at once)`);
     console.log(`🤖 AI Mode: ${this.aiCalc.claudeAvailable ? 'Claude API Enabled' : 'Local Learning Only'}\n`);
     
-    // Initial collection
     await this.collectAll();
     
-    // Collection every 5 minutes
     setInterval(async () => {
       await this.collectAll();
     }, 5 * 60 * 1000);
     
-    // Save to disk every 10 minutes
     setInterval(async () => {
       await this.aiCalc.persistData();
     }, 10 * 60 * 1000);
@@ -1009,13 +1191,12 @@ class BackgroundCollector {
     console.log(`⏰ ${time} | ${marketStatus}`);
     console.log(`${'='.repeat(80)}\n`);
     
-    // PARALLEL: Process 3 tickers at once
     const tickerArray = Array.from(this.trackedTickers);
     const tickerBatches = chunk(tickerArray, 3);
     
     for (const batch of tickerBatches) {
       await Promise.all(batch.map(ticker => this.collectTicker(ticker)));
-      await delay(2000); // Delay between ticker batches
+      await delay(2000);
     }
     
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -1023,8 +1204,8 @@ class BackgroundCollector {
     this.nextCollectionTime = new Date(Date.now() + 5 * 60 * 1000);
     
     const sources = [];
-    if (this.redditWorking) sources.push('Reddit');
-    if (this.blueskyWorking) sources.push('Bluesky');
+    if (this.redditWorking) sources.push('Reddit (70 subs)');
+    if (this.blueskyWorking) sources.push('Bluesky (20 patterns)');
     sources.push('StockTwits', 'News');
     
     console.log(`\n${'='.repeat(80)}`);
@@ -1035,14 +1216,122 @@ class BackgroundCollector {
     this.isCollecting = false;
   }
 
+  // CHANGE 5: Historical backfill for AI training
+  async backfillHistoricalData() {
+    console.log('\n📚 Starting Historical Backfill for AI Training...\n');
+    
+    const tickersToBackfill = Array.from(this.trackedTickers);
+    
+    for (const ticker of tickersToBackfill) {
+      console.log(`📖 Backfilling ${ticker}...`);
+      
+      try {
+        // Backfill 7 days of Reddit data
+        for (let daysAgo = 1; daysAgo <= 7; daysAgo++) {
+          const token = await this.getRedditToken();
+          if (!token) continue;
+          
+          const subreddit = 'wallstreetbets';
+          const searchUrl = `https://oauth.reddit.com/r/${subreddit}/search?q=${ticker}&restrict_sr=1&sort=top&t=week&limit=50`;
+          
+          const response = await this.redditLimiter.execute(() =>
+            fetch(searchUrl, {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'User-Agent': 'HypeMeter/5.4.0-backfill'
+              }
+            })
+          );
+          
+          if (!response.ok) continue;
+          
+          const data = await response.json();
+          let dayMentions = 0;
+          
+          if (data?.data?.children) {
+            for (const post of data.data.children) {
+              const postTime = post.data.created_utc * 1000;
+              const postDaysAgo = Math.floor((Date.now() - postTime) / (24 * 60 * 60 * 1000));
+              
+              if (postDaysAgo === daysAgo) {
+                const title = (post.data.title || '').toUpperCase();
+                const text = (post.data.selftext || '').toUpperCase();
+                const combined = `${title} ${text}`;
+                
+                const patterns = [
+                  new RegExp(`\\$${ticker}\\b`, 'gi'),
+                  new RegExp(`\\b${ticker}\\b`, 'gi')
+                ];
+                
+                patterns.forEach(p => {
+                  const matches = (combined.match(p) || []).length;
+                  if (matches > 0) {
+                    dayMentions += matches;
+                    
+                    if (!this.aiCalc.mentionEvents.has(ticker)) {
+                      this.aiCalc.mentionEvents.set(ticker, []);
+                    }
+                    this.aiCalc.mentionEvents.get(ticker).push({
+                      timestamp: postTime,
+                      source: 'reddit_backfill'
+                    });
+                  }
+                });
+              }
+            }
+          }
+          
+          console.log(`  Day -${daysAgo}: ${dayMentions} mentions`);
+          await delay(1000);
+        }
+        
+        // Backfill price history (30 days)
+        const apiKey = process.env.FINNHUB_API_KEY;
+        if (apiKey) {
+          try {
+            const to = Math.floor(Date.now() / 1000);
+            const from = to - (30 * 24 * 60 * 60);
+            
+            const candleRes = await this.finnhubLimiter.execute(() =>
+              fetch(`https://finnhub.io/api/v1/stock/candle?symbol=${ticker}&resolution=D&from=${from}&to=${to}&token=${apiKey}`)
+            );
+            const candle = await candleRes.json();
+            
+            if (candle.s === 'ok' && candle.c?.length > 0) {
+              for (let i = 0; i < candle.t.length; i++) {
+                this.aiCalc.recordPrice(
+                  ticker,
+                  candle.c[i],
+                  candle.v[i] || 0,
+                  'backfill'
+                );
+              }
+              console.log(`  ✓ Backfilled ${candle.t.length} days of price data`);
+            }
+          } catch (e) {
+            console.log(`  ⚠ Price backfill failed: ${e.message}`);
+          }
+        }
+        
+        console.log(`✅ ${ticker} backfill complete\n`);
+        await delay(2000);
+        
+      } catch (error) {
+        console.error(`❌ Error backfilling ${ticker}:`, error.message);
+      }
+    }
+    
+    console.log('📚 Historical Backfill Complete!\n');
+    await this.aiCalc.persistData();
+  }
+
   addTicker(ticker) {
     if (!this.trackedTickers.has(ticker)) {
       this.trackedTickers.add(ticker);
-      console.log(`➕ ${ticker} added to tracking - will be available after next collection cycle`);
+      console.log(`➕ ${ticker} added to tracking`);
     }
   }
 
-  // SERVING: Get hype data instantly from memory (NO API calls)
   getHypeData(ticker, windowMinutes) {
     const events = this.aiCalc.mentionEvents.get(ticker);
     
@@ -1050,19 +1339,17 @@ class BackgroundCollector {
       return {
         ticker,
         available: false,
-        message: 'Ticker not tracked yet - will be available after next collection cycle',
+        message: 'Ticker not tracked yet',
         nextCollection: this.nextCollectionTime?.toISOString()
       };
     }
     
-    // Calculate mentions for this window (instant - just filtering)
     const redditMentions = this.aiCalc.getMentionsInWindow(ticker, windowMinutes, 'reddit');
     const redditComments = this.aiCalc.getMentionsInWindow(ticker, windowMinutes, 'reddit_comment');
     const stocktwitsMentions = this.aiCalc.getMentionsInWindow(ticker, windowMinutes, 'stocktwits');
     const blueskyMentions = this.aiCalc.getMentionsInWindow(ticker, windowMinutes, 'bluesky');
     const newsMentions = this.aiCalc.getMentionsInWindow(ticker, windowMinutes, 'news');
     
-    // Get price data
     let priceChange = this.aiCalc.getPriceChange(ticker, windowMinutes);
     if (!priceChange && !this.aiCalc.isMarketOpen()) {
       priceChange = this.aiCalc.get24HourChange(ticker);
@@ -1080,7 +1367,8 @@ class BackgroundCollector {
       news_count: newsMentions,
       priceData: latestPrice ? {
         price: latestPrice.price,
-        volume: latestPrice.volume
+        volume: latestPrice.volume,
+        volumeSource: latestPrice.volumeSource
       } : null,
       priceChange,
       timestamp: Date.now()
@@ -1089,7 +1377,7 @@ class BackgroundCollector {
 
   getStats() {
     return {
-      version: '5.3.0-parallel-instant',
+      version: '5.4.0',
       tracked: this.trackedTickers.size,
       mention_events: Array.from(this.aiCalc.mentionEvents.values()).reduce((sum, e) => sum + e.length, 0),
       price_snapshots: Array.from(this.aiCalc.priceHistory.values()).reduce((sum, h) => sum + h.length, 0),
@@ -1133,7 +1421,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// INSTANT SERVING - reads from memory only, NEVER calls APIs
+// CHANGE 3: Updated API endpoint with percentile scoring
 app.get('/api/hype', async (req, res) => {
   try {
     const { tickers, window = 60 } = req.query;
@@ -1141,51 +1429,61 @@ app.get('/api/hype', async (req, res) => {
 
     const windowMinutes = parseInt(window);
     const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
+    
+    // First pass: collect all data
+    const allTickersData = new Map();
+    
+    for (const ticker of tickerList) {
+      collector.addTicker(ticker);
+      const data = collector.getHypeData(ticker, windowMinutes);
+      
+      if (data.available) {
+        allTickersData.set(ticker, {
+          reddit: data.reddit_mentions,
+          stocktwits: data.stocktwits_mentions,
+          bluesky: data.bluesky_mentions,
+          news: data.news_count,
+          volume: data.priceData?.volume || 0,
+          priceChangePercent: data.priceChange?.changePercent || 0,
+          marketOpen: collector.aiCalc.isMarketOpen()
+        });
+      }
+    }
+    
+    // Second pass: calculate scores with percentile context
     const results = {};
     
     for (const ticker of tickerList) {
-      // Add to tracking for future collections
-      collector.addTicker(ticker);
+      const data = allTickersData.get(ticker);
       
-      // Get data from memory (INSTANT - no API calls)
-      const data = collector.getHypeData(ticker, windowMinutes);
-      
-      if (!data.available) {
+      if (!data) {
         results[ticker] = {
           symbol: ticker,
           hypeScore: 0,
           available: false,
-          message: data.message,
-          nextCollection: data.nextCollection
+          message: 'Not yet tracked'
         };
         continue;
       }
       
-      // Calculate hype score from memory data
-      const hypeResult = await collector.aiCalc.calculateHype(ticker, {
-        reddit: data.reddit_mentions,
-        stocktwits: data.stocktwits_mentions,
-        bluesky: data.bluesky_mentions,
-        news: data.news_count,
-        volume: data.priceData?.volume || 0,
-        priceChangePercent: data.priceChange?.changePercent || 0,
-        marketOpen: collector.aiCalc.isMarketOpen()
-      });
+      const hypeResult = await collector.aiCalc.calculateHype(ticker, data, allTickersData);
+      const tickerData = collector.getHypeData(ticker, windowMinutes);
       
       results[ticker] = {
         symbol: ticker,
         hypeScore: hypeResult.hypeScore || 0,
+        rawScore: hypeResult.rawScore || 0,
         confidence: hypeResult.confidence || 50,
-        mentions: data.reddit_mentions + data.stocktwits_mentions + data.bluesky_mentions + data.news_count,
-        reddit_mentions: data.reddit_mentions,
-        stocktwits_mentions: data.stocktwits_mentions,
-        bluesky_mentions: data.bluesky_mentions,
-        news_count: data.news_count,
-        price: data.priceData?.price || null,
-        change: data.priceChange?.change || null,
-        changePercent: data.priceChange?.changePercent || null,
-        changeLabel: data.priceChange?.label || null,
-        volume: data.priceData?.volume || 0,
+        mentions: data.reddit + data.stocktwits + data.bluesky + data.news,
+        reddit_mentions: data.reddit,
+        stocktwits_mentions: data.stocktwits,
+        bluesky_mentions: data.bluesky,
+        news_count: data.news,
+        price: tickerData.priceData?.price || null,
+        change: tickerData.priceChange?.change || null,
+        changePercent: data.priceChangePercent,
+        volume: data.volume || 0,
+        volumeSource: tickerData.priceData?.volumeSource || 'unknown',
         name: ticker,
         mode: hypeResult.mode || 'baseline',
         reasoning: hypeResult.reasoning,
@@ -1219,11 +1517,6 @@ app.get('/api/debug/:ticker', (req, res) => {
   const newsMentions = collector.aiCalc.getMentionsInWindow(ticker, windowMinutes, 'news');
   const priceChange = collector.aiCalc.getPriceChange(ticker, windowMinutes);
   
-  const reddit24h = collector.aiCalc.getMentionsInWindow(ticker, 1440, 'reddit');
-  const stocktwits24h = collector.aiCalc.getMentionsInWindow(ticker, 1440, 'stocktwits');
-  const bluesky24h = collector.aiCalc.getMentionsInWindow(ticker, 1440, 'bluesky');
-  const news24h = collector.aiCalc.getMentionsInWindow(ticker, 1440, 'news');
-  
   res.json({
     ticker,
     window: windowMinutes,
@@ -1236,13 +1529,6 @@ app.get('/api/debug/:ticker', (req, res) => {
         bluesky: blueskyMentions,
         news: newsMentions
       },
-      last24h: {
-        reddit: reddit24h,
-        stocktwits: stocktwits24h,
-        bluesky: bluesky24h,
-        news: news24h,
-        total: reddit24h + stocktwits24h + bluesky24h + news24h
-      },
       oldest: mentionEvents.length > 0 ? new Date(mentionEvents[0].timestamp).toISOString() : null,
       newest: mentionEvents.length > 0 ? new Date(mentionEvents[mentionEvents.length - 1].timestamp).toISOString() : null
     },
@@ -1251,7 +1537,8 @@ app.get('/api/debug/:ticker', (req, res) => {
       oldest: priceHistory.length > 0 ? new Date(priceHistory[0].timestamp).toISOString() : null,
       newest: priceHistory.length > 0 ? new Date(priceHistory[priceHistory.length - 1].timestamp).toISOString() : null,
       latestPrice: priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].price : null,
-      latestVolume: priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].volume : null
+      latestVolume: priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].volume : null,
+      latestVolumeSource: priceHistory.length > 0 ? priceHistory[priceHistory.length - 1].volumeSource : null
     },
     aiWeights: weights,
     aiInsights: tickerInsights.map(i => ({
@@ -1265,9 +1552,7 @@ app.get('/api/debug/:ticker', (req, res) => {
       mentions: currentMentions,
       priceChange: priceChange
     },
-    marketOpen: collector.aiCalc.isMarketOpen(),
-    totalAIInsights: collector.aiCalc.aiInsights.length,
-    totalLearnedWeights: collector.aiCalc.aiWeights.size
+    marketOpen: collector.aiCalc.isMarketOpen()
   });
 });
 
@@ -1293,26 +1578,24 @@ app.get('/api/ai/insights', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({
-    message: 'HypeMeter.ai v5.3.0 - Parallel Collection + Instant Serving',
-    version: '5.3.0-parallel-instant',
+    message: 'HypeMeter.ai v5.4.0 - Enhanced Multi-Source Collection',
+    version: '5.4.0',
     status: 'running',
     features: [
-      '⚡ INSTANT API responses (<50ms) - reads from memory only',
-      '🚀 PARALLEL collection (4 subs + 3 tickers at once)',
-      '⏱️  4-5× faster collection (7min → 90sec)',
-      '💾 Data always in memory - no cache needed',
-      '📅 Collects from last 24 hours, filters on demand',
-      '💬 Reddit posts + comments',
-      '🐦 6 Bluesky search strategies',
-      '📰 ALL news from last 7 days',
+      '⚡ INSTANT API responses (<50ms)',
+      '🚀 PARALLEL collection (4 subs + 3 tickers)',
+      '📊 70 Reddit subreddits (up from 19)',
+      '🐦 20 Bluesky search patterns (up from 6)',
+      '💾 Multi-strategy volume collection (4-tier fallback)',
+      '🎯 Percentile-based scoring (no more 100/100 spam)',
+      '📚 Historical backfill for AI training',
       '🤖 AI-powered dynamic weighting',
-      '🧠 Claude API for deep intelligence',
-      '🎯 Self-learning from patterns'
+      '🧠 Claude API for deep intelligence'
     ],
     architecture: {
       collection: 'Background only, every 5 min, parallel',
       serving: 'Instant from memory, zero API calls',
-      storage: 'In-memory Maps + disk persistence'
+      storage: 'Persistent disk at /var/data'
     },
     endpoints: {
       health: '/health',
@@ -1354,7 +1637,7 @@ process.on('SIGTERM', async () => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`\n${'='.repeat(80)}`);
-  console.log(`🚀 HypeMeter.ai v5.3.0 - Parallel Collection + Instant Serving`);
+  console.log(`🚀 HypeMeter.ai v5.4.0 - Enhanced Data Collection`);
   console.log(`${'='.repeat(80)}\n`);
   console.log(`📡 Server running on port ${PORT}`);
   console.log(`\n🔧 Configuration:`);
@@ -1362,20 +1645,22 @@ app.listen(PORT, async () => {
   console.log(`   Finnhub API: ${process.env.FINNHUB_API_KEY ? '✓' : '✗'}`);
   console.log(`   Reddit OAuth: ${process.env.REDDIT_CLIENT_ID ? '✓' : '✗'}`);
   console.log(`   Bluesky Auth: ${process.env.BLUESKY_USERNAME ? '✓' : '✗'}`);
-  console.log(`   Claude AI: ${process.env.ANTHROPIC_API_KEY ? '✓ Enabled' : '✗ Disabled (optional)'}`);
-  console.log(`\n⚡ Revolutionary Architecture:`);
-  console.log(`   🔄 Collection: Background only (every 5 min) with PARALLEL processing`);
-  console.log(`   📊 Serving: INSTANT from memory (zero API calls)`);
-  console.log(`   💾 Storage: In-memory Maps + disk persistence`);
-  console.log(`   🚀 Speed: 4-5× faster collection, <50ms API response`);
+  console.log(`   Claude AI: ${process.env.ANTHROPIC_API_KEY ? '✓ Enabled' : '✗ Disabled'}`);
+  console.log(`\n🆕 v5.4.0 Features:`);
+  console.log(`   📊 70 Reddit subreddits (vs 19)`);
+  console.log(`   💾 Multi-strategy volume collection (4-tier fallback)`);
+  console.log(`   🎯 Percentile-based scoring (no more 100/100 spam)`);
+  console.log(`   🐦 20 Bluesky search patterns (vs 6)`);
+  console.log(`   📚 Historical backfill for AI training`);
   console.log(`\n${'='.repeat(80)}\n`);
   
   const hasData = await collector.init();
   
-  if (hasData) {
-    console.log('✅ READY TO SERVE - Data loaded from disk!\n');
+  if (!hasData) {
+    console.log('📖 No existing data - running historical backfill...\n');
+    await collector.backfillHistoricalData();
   } else {
-    console.log('⏳ Starting first collection cycle...\n');
+    console.log('✅ Existing data loaded - skipping backfill\n');
   }
   
   await collector.startBackgroundCollection();
