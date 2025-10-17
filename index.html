@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HypeMeter - Stock Hype Tracker</title>
+    <title>HypeMeter v5.4.0 - Debug Console</title>
     <style>
         * {
             margin: 0;
@@ -12,426 +12,562 @@
         }
 
         body {
-            font-family: 'Arial', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333;
-            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            background: #1a1a2e;
+            color: #eee;
             padding: 20px;
+            font-size: 13px;
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1600px;
             margin: 0 auto;
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
         }
 
         .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
             text-align: center;
-            margin-bottom: 40px;
         }
 
         .header h1 {
-            color: #4a5568;
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            background: linear-gradient(45deg, #667eea, #764ba2);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            color: white;
+            font-size: 2em;
+            margin-bottom: 5px;
         }
 
         .header p {
-            color: #718096;
-            font-size: 1.1em;
+            color: #f0f0f0;
+            font-size: 0.9em;
         }
 
         .version-badge {
             display: inline-block;
-            background: #667eea;
-            color: white;
-            padding: 5px 12px;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 5px 15px;
             border-radius: 20px;
-            font-size: 0.85em;
             margin-top: 10px;
-        }
-
-        .scoring-mode {
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.75em;
-            font-weight: 600;
-            margin-left: 8px;
-        }
-
-        .mode-simple {
-            background: #fef3c7;
-            color: #92400e;
-        }
-
-        .mode-dynamic {
-            background: #d1fae5;
-            color: #065f46;
+            font-weight: bold;
         }
 
         .controls {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 2px solid #0f3460;
+        }
+
+        .control-row {
             display: flex;
             gap: 15px;
-            margin-bottom: 30px;
+            margin-bottom: 15px;
             align-items: center;
             flex-wrap: wrap;
         }
 
-        .input-group {
-            display: flex;
-            gap: 10px;
-            align-items: center;
+        .control-row:last-child {
+            margin-bottom: 0;
         }
 
         input, select, button {
-            padding: 12px 16px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: all 0.3s ease;
+            padding: 10px 15px;
+            border: 2px solid #0f3460;
+            border-radius: 5px;
+            background: #0f3460;
+            color: #eee;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
         }
 
         input:focus, select:focus {
             outline: none;
             border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
 
         button {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
             border: none;
             cursor: pointer;
-            font-weight: 600;
+            font-weight: bold;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            transition: transform 0.2s;
         }
 
         button:hover {
             transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
         }
 
         button:disabled {
-            opacity: 0.6;
+            opacity: 0.5;
             cursor: not-allowed;
             transform: none;
         }
 
-        .status {
+        .status-bar {
+            background: #16213e;
             padding: 15px;
-            border-radius: 8px;
+            border-radius: 10px;
             margin-bottom: 20px;
-            font-weight: 500;
-            text-align: center;
+            border: 2px solid #0f3460;
+            font-size: 12px;
         }
 
-        .status.loading {
-            background: #bee3f8;
-            color: #2b6cb0;
-            border: 1px solid #90cdf4;
+        .status-bar.loading {
+            border-color: #3498db;
+            background: #16213e;
         }
 
-        .status.error {
-            background: #fed7d7;
-            color: #c53030;
-            border: 1px solid #fc8181;
+        .status-bar.success {
+            border-color: #2ecc71;
+            background: rgba(46, 204, 113, 0.1);
         }
 
-        .status.success {
-            background: #c6f6d5;
-            color: #276749;
-            border: 1px solid #9ae6b4;
+        .status-bar.error {
+            border-color: #e74c3c;
+            background: rgba(231, 76, 60, 0.1);
         }
 
         .stock-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
             gap: 20px;
-            margin-top: 20px;
+            margin-bottom: 20px;
         }
 
         .stock-card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
-            border: 1px solid #e2e8f0;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
+            background: #16213e;
+            border: 2px solid #0f3460;
+            border-radius: 10px;
+            padding: 20px;
+            transition: all 0.3s;
         }
 
         .stock-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.15);
+            border-color: #667eea;
+            transform: translateY(-3px);
         }
 
         .stock-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #0f3460;
         }
 
         .stock-symbol {
-            font-size: 1.4em;
+            font-size: 1.8em;
             font-weight: bold;
-            color: #2d3748;
+            color: #667eea;
+        }
+
+        .hype-badge {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
         }
 
         .hype-score {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 8px 16px;
-            border-radius: 20px;
+            font-size: 2em;
             font-weight: bold;
-            font-size: 1.1em;
+            color: #2ecc71;
         }
 
-        .stock-price {
+        .hype-score.high {
+            color: #e74c3c;
+        }
+
+        .hype-score.medium {
+            color: #f39c12;
+        }
+
+        .raw-score {
+            font-size: 0.8em;
+            color: #95a5a6;
+            margin-top: 3px;
+        }
+
+        .data-section {
+            margin-bottom: 15px;
+        }
+
+        .section-title {
+            color: #667eea;
+            font-weight: bold;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 1px;
+        }
+
+        .data-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            background: #0f3460;
+            padding: 12px;
+            border-radius: 5px;
+        }
+
+        .data-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px;
+        }
+
+        .data-label {
+            color: #95a5a6;
+            font-size: 0.9em;
+        }
+
+        .data-value {
+            color: #ecf0f1;
+            font-weight: bold;
+        }
+
+        .data-value.positive {
+            color: #2ecc71;
+        }
+
+        .data-value.negative {
+            color: #e74c3c;
+        }
+
+        .data-value.warning {
+            color: #f39c12;
+        }
+
+        .mention-breakdown {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .mention-source {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .mention-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .mention-label {
+            font-size: 0.8em;
+            color: #95a5a6;
+            text-transform: uppercase;
+        }
+
+        .ai-info {
+            background: #0f3460;
+            padding: 12px;
+            border-radius: 5px;
+            margin-top: 10px;
+            border-left: 4px solid #667eea;
+        }
+
+        .ai-mode {
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .ai-reasoning {
+            font-size: 0.9em;
+            color: #bdc3c7;
+            line-height: 1.4;
+        }
+
+        .weights-display {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .weight-item {
+            background: rgba(102, 126, 234, 0.1);
+            padding: 8px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .weight-label {
+            font-size: 0.75em;
+            color: #95a5a6;
+            text-transform: uppercase;
+        }
+
+        .weight-value {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .price-info {
+            background: linear-gradient(135deg, #0f3460 0%, #16213e 100%);
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+        }
+
+        .price-main {
             font-size: 1.8em;
             font-weight: bold;
+            color: #ecf0f1;
             margin-bottom: 5px;
         }
 
         .price-change {
-            font-size: 1.1em;
-            font-weight: 600;
-            margin-bottom: 15px;
-        }
-
-        .positive {
-            color: #38a169;
-        }
-
-        .negative {
-            color: #e53e3e;
-        }
-
-        .neutral {
-            color: #718096;
-        }
-
-        .stock-metrics {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-top: 20px;
-        }
-
-        .metric {
-            text-align: center;
-            padding: 12px;
-            background: #f7fafc;
-            border-radius: 8px;
-            border: 1px solid #e2e8f0;
-        }
-
-        .metric-value {
             font-size: 1.2em;
             font-weight: bold;
-            color: #2d3748;
-            display: block;
         }
 
-        .metric-label {
-            font-size: 0.85em;
-            color: #718096;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 4px;
+        .volume-info {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #0f3460;
         }
 
-        .mention-breakdown {
-            display: flex;
-            justify-content: space-around;
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid #e2e8f0;
-            font-size: 0.85em;
-            color: #718096;
+        .volume-source {
+            font-size: 0.8em;
+            color: #95a5a6;
+            margin-top: 3px;
         }
 
-        .mention-source {
+        .backend-info {
+            background: #16213e;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 2px solid #0f3460;
+        }
+
+        .backend-status {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .backend-metric {
+            background: #0f3460;
+            padding: 12px;
+            border-radius: 5px;
             text-align: center;
         }
 
-        .mention-source-value {
+        .metric-value-large {
+            font-size: 1.5em;
             font-weight: bold;
-            color: #4a5568;
+            color: #667eea;
             display: block;
-            margin-bottom: 3px;
+        }
+
+        .metric-label-large {
+            font-size: 0.8em;
+            color: #95a5a6;
+            text-transform: uppercase;
+            margin-top: 5px;
+        }
+
+        .raw-json {
+            background: #0f0f0f;
+            border: 2px solid #0f3460;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .raw-json pre {
+            color: #2ecc71;
+            font-size: 11px;
+            line-height: 1.5;
+            overflow-x: auto;
+        }
+
+        .toggle-json {
+            background: #0f3460;
+            color: #667eea;
+            border: 2px solid #667eea;
+            margin-bottom: 10px;
         }
 
         .last-updated {
             text-align: center;
-            color: #718096;
+            color: #95a5a6;
             font-size: 0.9em;
-            margin-top: 30px;
+            margin-top: 20px;
             padding-top: 20px;
-            border-top: 1px solid #e2e8f0;
-        }
-
-        .refresh-info {
-            background: #edf2f7;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            text-align: center;
-            color: #4a5568;
-        }
-
-        .api-status {
-            background: #f7fafc;
-            padding: 10px 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-size: 0.9em;
-            color: #4a5568;
-            text-align: center;
-        }
-
-        @media (max-width: 768px) {
-            .controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
-
-            .input-group {
-                flex-direction: column;
-            }
-
-            .stock-grid {
-                grid-template-columns: 1fr;
-            }
+            border-top: 2px solid #0f3460;
         }
 
         .loading-spinner {
             display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #ffffff;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #ffffff;
             border-radius: 50%;
             border-top-color: transparent;
             animation: spin 1s linear infinite;
-            margin-right: 10px;
+            margin-right: 8px;
         }
 
         @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
+            to { transform: rotate(360deg); }
         }
 
-        .hype-bar {
+        .confidence-bar {
             width: 100%;
-            height: 8px;
-            background: #e2e8f0;
-            border-radius: 4px;
+            height: 6px;
+            background: #0f3460;
+            border-radius: 3px;
+            margin-top: 5px;
             overflow: hidden;
-            margin-top: 10px;
         }
 
-        .hype-fill {
+        .confidence-fill {
             height: 100%;
-            background: linear-gradient(90deg, #48bb78, #38a169, #2f855a);
-            border-radius: 4px;
-            transition: width 0.8s ease;
+            background: linear-gradient(90deg, #2ecc71, #27ae60);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        @media (max-width: 768px) {
+            .stock-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .data-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .mention-breakdown {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>📈 HypeMeter</h1>
-            <p>AI-powered stock hype tracking • Self-learning algorithms</p>
-            <span class="version-badge">v5.2 - AI Self-Learning</span>
+            <h1>🔬 HypeMeter v5.4.0 - Debug Console</h1>
+            <p>Complete Data Visualization & Testing Interface</p>
+            <span class="version-badge">All Systems Test Mode</span>
         </div>
 
-        <div class="api-status" id="apiStatus">
-            🔗 Connecting to backend...
+        <div class="backend-info">
+            <div class="section-title">Backend Status</div>
+            <div class="backend-status" id="backendStatus">
+                <div class="backend-metric">
+                    <span class="metric-value-large" id="backendVersion">...</span>
+                    <div class="metric-label-large">Version</div>
+                </div>
+                <div class="backend-metric">
+                    <span class="metric-value-large" id="backendTracked">...</span>
+                    <div class="metric-label-large">Tracked Tickers</div>
+                </div>
+                <div class="backend-metric">
+                    <span class="metric-value-large" id="backendEvents">...</span>
+                    <div class="metric-label-large">Mention Events</div>
+                </div>
+                <div class="backend-metric">
+                    <span class="metric-value-large" id="backendPrices">...</span>
+                    <div class="metric-label-large">Price Snapshots</div>
+                </div>
+                <div class="backend-metric">
+                    <span class="metric-value-large" id="backendAI">...</span>
+                    <div class="metric-label-large">AI Insights</div>
+                </div>
+                <div class="backend-metric">
+                    <span class="metric-value-large" id="backendMarket">...</span>
+                    <div class="metric-label-large">Market Status</div>
+                </div>
+            </div>
         </div>
 
         <div class="controls">
-            <div class="input-group">
-                <input type="text" id="tickerInput" placeholder="Enter tickers (e.g., NVDA,AAPL,TSLA)" 
-                       value="NVDA,AAPL,TSLA,MSFT,GOOGL">
+            <div class="control-row">
+                <label style="color: #95a5a6;">Tickers:</label>
+                <input type="text" id="tickerInput" placeholder="NVDA,AAPL,TSLA,MSFT,GOOGL" 
+                       value="NVDA,AAPL,TSLA,MSFT,GOOGL" style="flex: 1; min-width: 300px;">
             </div>
-            <div class="input-group">
+            <div class="control-row">
+                <label style="color: #95a5a6;">Time Window:</label>
                 <select id="timeWindow">
                     <option value="60">Last 60 minutes</option>
                     <option value="120">Last 2 hours</option>
                     <option value="240">Last 4 hours</option>
                     <option value="480">Last 8 hours</option>
+                    <option value="1440">Last 24 hours</option>
                 </select>
+                
+                <button id="fetchData" onclick="fetchHypeData()">
+                    <span id="buttonText">Fetch Data</span>
+                </button>
+                
+                <button id="autoRefresh" onclick="toggleAutoRefresh()">Auto: OFF</button>
+                
+                <button class="toggle-json" onclick="toggleRawJSON()">Toggle Raw JSON</button>
             </div>
-            <button id="fetchData" onclick="fetchHypeData()">
-                <span id="buttonText">Get Hype Scores</span>
-            </button>
-            <button id="autoRefresh" onclick="toggleAutoRefresh()">Auto Refresh: OFF</button>
         </div>
 
-        <div class="refresh-info">
-            💡 v5.1: Volume fixed • Reddit working • Timeframes accurate • Hybrid scoring (simple→dynamic)
-        </div>
-
-        <div id="status" class="status" style="display: none;"></div>
+        <div id="statusBar" class="status-bar" style="display: none;"></div>
 
         <div id="stockGrid" class="stock-grid"></div>
+
+        <div id="rawJSON" class="raw-json" style="display: none;">
+            <pre id="jsonContent"></pre>
+        </div>
 
         <div class="last-updated" id="lastUpdated"></div>
     </div>
 
     <script>
         const API_BASE_URL = 'https://hypemeter.onrender.com';
-        
         let autoRefreshInterval = null;
         let isAutoRefreshEnabled = false;
+        let lastResponse = null;
 
         async function testBackendConnection() {
             try {
                 const response = await fetch(`${API_BASE_URL}/health`);
                 const data = await response.json();
                 
-                if (data.status === 'ok') {
-                    const eventCount = data.mention_events || 0;
-                    const priceCount = data.price_snapshots || 0;
-                    const marketStatus = data.market_open ? '🟢 Open' : '🔴 Closed';
-                    
-                    document.getElementById('apiStatus').innerHTML = 
-                        `✅ Backend v${data.version} • ${data.tracked} tickers • ${eventCount.toLocaleString()} events • ${priceCount} prices • Market: ${marketStatus}`;
-                    document.getElementById('apiStatus').style.background = '#c6f6d5';
-                    document.getElementById('apiStatus').style.color = '#276749';
-                } else {
-                    throw new Error('Backend not responding properly');
-                }
+                document.getElementById('backendVersion').textContent = data.version || 'Unknown';
+                document.getElementById('backendTracked').textContent = data.tracked || 0;
+                document.getElementById('backendEvents').textContent = (data.mention_events || 0).toLocaleString();
+                document.getElementById('backendPrices').textContent = (data.price_snapshots || 0).toLocaleString();
+                document.getElementById('backendAI').textContent = data.ai_insights || 0;
+                document.getElementById('backendMarket').textContent = data.market_open ? '🟢 OPEN' : '🔴 CLOSED';
+                
             } catch (error) {
                 console.error('Backend connection failed:', error);
-                document.getElementById('apiStatus').innerHTML = '❌ Backend connection failed: ' + error.message;
-                document.getElementById('apiStatus').style.background = '#fed7d7';
-                document.getElementById('apiStatus').style.color = '#c53030';
+                document.getElementById('backendVersion').textContent = '❌ ERROR';
             }
         }
 
         function showStatus(message, type) {
-            const status = document.getElementById('status');
+            const status = document.getElementById('statusBar');
             status.textContent = message;
-            status.className = `status ${type}`;
+            status.className = `status-bar ${type}`;
             status.style.display = 'block';
         }
 
         function hideStatus() {
-            const status = document.getElementById('status');
-            status.style.display = 'none';
+            document.getElementById('statusBar').style.display = 'none';
         }
 
         function setButtonLoading(loading) {
@@ -443,18 +579,15 @@
                 buttonText.innerHTML = '<span class="loading-spinner"></span>Fetching...';
             } else {
                 button.disabled = false;
-                buttonText.textContent = 'Get Hype Scores';
+                buttonText.textContent = 'Fetch Data';
             }
         }
 
         function formatNumber(num) {
-            if (num >= 1000000) {
-                return (num / 1000000).toFixed(1) + 'M';
-            }
-            if (num >= 1000) {
-                return (num / 1000).toFixed(1) + 'K';
-            }
-            return num ? num.toString() : '0';
+            if (!num) return '0';
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toString();
         }
 
         function formatPrice(price) {
@@ -473,71 +606,145 @@
             return `${sign}${percent.toFixed(2)}%`;
         }
 
+        function getScoreClass(score) {
+            if (score >= 75) return 'high';
+            if (score >= 50) return 'medium';
+            return '';
+        }
+
         function getChangeClass(change) {
             if (change > 0) return 'positive';
             if (change < 0) return 'negative';
-            return 'neutral';
+            return '';
         }
 
         function createStockCard(data) {
+            const scoreClass = getScoreClass(data.hypeScore);
             const changeClass = getChangeClass(data.change || 0);
-            const hypeColor = data.hypeScore >= 70 ? '#e53e3e' : data.hypeScore >= 40 ? '#d69e2e' : '#38a169';
             
-            // Display the COMBINED mentions count
-            const totalMentions = data.mentions || 0;
-            const redditMentions = data.reddit_mentions || 0;
-            const stocktwitsMentions = data.stocktwits_mentions || 0;
-            
-            // Scoring mode badge
-            const scoringMode = data.scoringMode || 'SIMPLE';
-            const modeClass = scoringMode === 'DYNAMIC' ? 'mode-dynamic' : 'mode-simple';
-            const modeLabel = scoringMode === 'DYNAMIC' ? '🎯 Dynamic' : '📊 Simple';
-            const dataAgeText = data.dataAge ? `${data.dataAge}d old` : 'New';
-            
-            // Volume display with market status
-            const volumeDisplay = data.volume && data.volume > 0 
-                ? formatNumber(data.volume) 
-                : '0';
+            let weightsHTML = '';
+            if (data.weights) {
+                weightsHTML = `
+                    <div class="data-section">
+                        <div class="section-title">AI Learned Weights</div>
+                        <div class="weights-display">
+                            <div class="weight-item">
+                                <div class="weight-label">Reddit</div>
+                                <div class="weight-value">${(data.weights.reddit * 100).toFixed(0)}%</div>
+                            </div>
+                            <div class="weight-item">
+                                <div class="weight-label">StockTwits</div>
+                                <div class="weight-value">${(data.weights.stocktwits * 100).toFixed(0)}%</div>
+                            </div>
+                            <div class="weight-item">
+                                <div class="weight-label">Bluesky</div>
+                                <div class="weight-value">${(data.weights.bluesky * 100).toFixed(0)}%</div>
+                            </div>
+                            <div class="weight-item">
+                                <div class="weight-label">News</div>
+                                <div class="weight-value">${(data.weights.news * 100).toFixed(0)}%</div>
+                            </div>
+                            <div class="weight-item">
+                                <div class="weight-label">Volume</div>
+                                <div class="weight-value">${(data.weights.volume * 100).toFixed(0)}%</div>
+                            </div>
+                            <div class="weight-item">
+                                <div class="weight-label">Price</div>
+                                <div class="weight-value">${(data.weights.price * 100).toFixed(0)}%</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
             
             return `
                 <div class="stock-card">
                     <div class="stock-header">
-                        <div class="stock-symbol">
-                            ${data.symbol}
-                            <span class="scoring-mode ${modeClass}" title="${dataAgeText}">${modeLabel}</span>
-                        </div>
-                        <div class="hype-score" style="background: ${hypeColor}">${data.hypeScore}/100</div>
-                    </div>
-                    
-                    <div class="stock-price">${formatPrice(data.price)}</div>
-                    <div class="price-change ${changeClass}">
-                        ${data.change !== null ? formatPrice(data.change) : 'N/A'} 
-                        (${formatPercent(data.changePercent)})
-                    </div>
-                    
-                    <div class="hype-bar">
-                        <div class="hype-fill" style="width: ${data.hypeScore}%; background: ${hypeColor}"></div>
-                    </div>
-                    
-                    <div class="stock-metrics">
-                        <div class="metric">
-                            <span class="metric-value">${formatNumber(totalMentions)}</span>
-                            <div class="metric-label">Total Mentions</div>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-value">${volumeDisplay}</span>
-                            <div class="metric-label">Volume</div>
+                        <div class="stock-symbol">${data.symbol}</div>
+                        <div class="hype-badge">
+                            <div class="hype-score ${scoreClass}">${data.hypeScore}/100</div>
+                            ${data.rawScore ? `<div class="raw-score">Raw: ${data.rawScore}</div>` : ''}
                         </div>
                     </div>
                     
-                    <div class="mention-breakdown">
-                        <div class="mention-source">
-                            <span class="mention-source-value">${formatNumber(redditMentions)}</span>
-                            <div>Reddit</div>
+                    <div class="price-info">
+                        <div class="price-main">${formatPrice(data.price)}</div>
+                        <div class="price-change ${changeClass}">
+                            ${formatPrice(data.change)} (${formatPercent(data.changePercent)})
                         </div>
-                        <div class="mention-source">
-                            <span class="mention-source-value">${formatNumber(stocktwitsMentions)}</span>
-                            <div>StockTwits</div>
+                        <div class="volume-info">
+                            <div class="data-item">
+                                <span class="data-label">Volume:</span>
+                                <span class="data-value">${formatNumber(data.volume)}</span>
+                            </div>
+                            ${data.volumeSource ? `<div class="volume-source">Source: ${data.volumeSource}</div>` : ''}
+                        </div>
+                    </div>
+                    
+                    <div class="data-section">
+                        <div class="section-title">Mention Breakdown (${data.mentions || 0} Total)</div>
+                        <div class="mention-breakdown">
+                            <div class="mention-source">
+                                <span class="mention-value">${data.reddit_mentions || 0}</span>
+                                <div class="mention-label">Reddit</div>
+                            </div>
+                            <div class="mention-source">
+                                <span class="mention-value">${data.stocktwits_mentions || 0}</span>
+                                <div class="mention-label">StockTwits</div>
+                            </div>
+                            <div class="mention-source">
+                                <span class="mention-value">${data.bluesky_mentions || 0}</span>
+                                <div class="mention-label">Bluesky</div>
+                            </div>
+                            <div class="mention-source">
+                                <span class="mention-value">${data.news_count || 0}</span>
+                                <div class="mention-label">News</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="data-section">
+                        <div class="section-title">AI Analysis</div>
+                        <div class="ai-info">
+                            <div class="ai-mode">Mode: ${data.mode || 'unknown'}</div>
+                            ${data.confidence ? `
+                                <div style="margin: 8px 0;">
+                                    <span class="data-label">Confidence: ${data.confidence}%</span>
+                                    <div class="confidence-bar">
+                                        <div class="confidence-fill" style="width: ${data.confidence}%"></div>
+                                    </div>
+                                </div>
+                            ` : ''}
+                            ${data.reasoning ? `<div class="ai-reasoning">${data.reasoning}</div>` : ''}
+                            ${data.recommendation ? `
+                                <div style="margin-top: 8px; color: #f39c12; font-weight: bold;">
+                                    Recommendation: ${data.recommendation}
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    
+                    ${weightsHTML}
+                    
+                    <div class="data-section">
+                        <div class="section-title">Technical Data</div>
+                        <div class="data-grid">
+                            <div class="data-item">
+                                <span class="data-label">Timestamp:</span>
+                                <span class="data-value">${new Date(data.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                            <div class="data-item">
+                                <span class="data-label">Available:</span>
+                                <span class="data-value ${data.available === false ? 'warning' : 'positive'}">
+                                    ${data.available !== false ? 'Yes' : 'No'}
+                                </span>
+                            </div>
+                            ${data.message ? `
+                                <div class="data-item" style="grid-column: 1 / -1;">
+                                    <span class="data-label">Message:</span>
+                                    <span class="data-value warning">${data.message}</span>
+                                </div>
+                            ` : ''}
                         </div>
                     </div>
                 </div>
@@ -554,19 +761,23 @@
             }
 
             setButtonLoading(true);
-            showStatus('Fetching real-time hype data with dynamic weights...', 'loading');
+            showStatus('Fetching comprehensive hype data...', 'loading');
 
             try {
-                console.log('Fetching from:', `${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`);
+                const url = `${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`;
+                console.log('Fetching from:', url);
                 
-                const response = await fetch(`${API_BASE_URL}/api/hype?tickers=${encodeURIComponent(tickerInput)}&window=${timeWindow}`);
+                const response = await fetch(url);
                 
                 if (!response.ok) {
                     throw new Error(`API Error: ${response.status} ${response.statusText}`);
                 }
 
                 const data = await response.json();
+                lastResponse = data;
                 console.log('Received data:', data);
+                
+                document.getElementById('jsonContent').textContent = JSON.stringify(data, null, 2);
                 
                 if (data.error) {
                     throw new Error(data.error);
@@ -582,13 +793,20 @@
                 stockGrid.innerHTML = sortedData.map(stock => createStockCard(stock)).join('');
                 
                 const lastUpdated = document.getElementById('lastUpdated');
-                lastUpdated.textContent = `Last updated: ${new Date().toLocaleString()} • Time window: ${timeWindow} minutes`;
+                lastUpdated.innerHTML = `
+                    Last updated: ${new Date().toLocaleString()}<br>
+                    Time window: ${timeWindow} minutes<br>
+                    Tickers: ${sortedData.length}
+                `;
                 
-                hideStatus();
+                showStatus(`✅ Successfully loaded ${sortedData.length} tickers`, 'success');
+                setTimeout(hideStatus, 3000);
+                
+                await testBackendConnection();
                 
             } catch (error) {
                 console.error('Error fetching hype data:', error);
-                showStatus(`Error: ${error.message}`, 'error');
+                showStatus(`❌ Error: ${error.message}`, 'error');
             } finally {
                 setButtonLoading(false);
             }
@@ -600,15 +818,20 @@
             if (isAutoRefreshEnabled) {
                 clearInterval(autoRefreshInterval);
                 isAutoRefreshEnabled = false;
-                button.textContent = 'Auto Refresh: OFF';
+                button.textContent = 'Auto: OFF';
                 button.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
             } else {
                 autoRefreshInterval = setInterval(fetchHypeData, 5 * 60 * 1000);
                 isAutoRefreshEnabled = true;
-                button.textContent = 'Auto Refresh: ON';
-                button.style.background = 'linear-gradient(135deg, #48bb78 0%, #38a169 100%)';
+                button.textContent = 'Auto: ON';
+                button.style.background = 'linear-gradient(135deg, #2ecc71 0%, #27ae60 100%)';
                 fetchHypeData();
             }
+        }
+
+        function toggleRawJSON() {
+            const jsonDiv = document.getElementById('rawJSON');
+            jsonDiv.style.display = jsonDiv.style.display === 'none' ? 'block' : 'none';
         }
 
         document.getElementById('tickerInput').addEventListener('keypress', function(e) {
@@ -618,19 +841,16 @@
         });
 
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('HypeMeter v5.1 frontend loaded - All Fixes Applied');
+            console.log('HypeMeter v5.4.0 Debug Console loaded');
             console.log('API Base URL:', API_BASE_URL);
-            console.log('Fixes:');
-            console.log('  ✅ Volume working (Finnhub Candle)');
-            console.log('  ✅ Reddit OAuth integrated');
-            console.log('  ✅ Timeframes affect all metrics');
-            console.log('  ✅ Hybrid scoring');
             
             testBackendConnection();
             
             setTimeout(() => {
                 fetchHypeData();
             }, 1000);
+            
+            setInterval(testBackendConnection, 30000);
         });
     </script>
 </body>
